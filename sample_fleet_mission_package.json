@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "createdBy": "Fleet Mission Editor Skeleton",
+  "qgcPlanSettings": {
+    "firmwareType": 12,
+    "vehicleType": 2,
+    "hoverSpeed": 5,
+    "cruiseSpeed": 15,
+    "useFirstAsTakeoff": true,
+    "globalPlanAltitudeMode": 1
+  },
+  "missions": {
+    "mother": {
+      "vehicleId": "mother",
+      "name": "Mother",
+      "role": "mother",
+      "connection": { "ip": "192.168.0.101", "port": 14550, "sysid": 1 },
+      "uploadState": "Editing",
+      "waypoints": [
+        { "seq": 1, "lat": 36.3504, "lon": 127.3845, "alt": 30, "command": "WAYPOINT", "action": "NONE" },
+        { "seq": 2, "lat": 36.3520, "lon": 127.3860, "alt": 30, "command": "WAYPOINT", "action": "RELEASE_CHILD_1" }
+      ]
+    },
+    "child1": {
+      "vehicleId": "child1",
+      "name": "Child 1",
+      "role": "child",
+      "connection": { "ip": "192.168.0.111", "port": 14551, "sysid": 11 },
+      "uploadState": "Editing",
+      "waypoints": [
+        { "seq": 1, "lat": 36.3522, "lon": 127.3862, "alt": 10, "command": "WAYPOINT", "action": "NONE" },
+        { "seq": 2, "lat": 36.3530, "lon": 127.3880, "alt": 10, "command": "WAYPOINT", "action": "NONE" }
+      ]
+    },
+    "child2": { "vehicleId": "child2", "name": "Child 2", "role": "child", "connection": { "ip": "192.168.0.112", "port": 14552, "sysid": 12 }, "uploadState": "Editing", "waypoints": [] },
+    "child3": { "vehicleId": "child3", "name": "Child 3", "role": "child", "connection": { "ip": "192.168.0.113", "port": 14553, "sysid": 13 }, "uploadState": "Editing", "waypoints": [] },
+    "child4": { "vehicleId": "child4", "name": "Child 4", "role": "child", "connection": { "ip": "192.168.0.114", "port": 14554, "sysid": 14 }, "uploadState": "Editing", "waypoints": [] }
+  }
+}
