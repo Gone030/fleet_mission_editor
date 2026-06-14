@@ -142,6 +142,15 @@ const COMMAND = {
   MAV_FRAME_GLOBAL_RELATIVE_ALT: 3,
 };
 
+const VEHICLE_COLORS = [
+  '#0891b2',
+  '#4f46e5',
+  '#c026d3',
+  '#ea580c',
+  '#65a30d',
+  '#0d9488',
+];
+
 let markers = {};
 let polylines = {};
 
@@ -156,10 +165,15 @@ map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
 
 document.getElementById('exportPackageBtn').addEventListener('click', exportPackageJson);
 document.getElementById('importPackageInput').addEventListener('change', importPackageJson);
+document.getElementById('addVehicleBtn').addEventListener('click', showVehicleForm);
+document.getElementById('deleteVehicleBtn').addEventListener('click', deleteSelectedVehicle);
+document.getElementById('vehicleForm').addEventListener('submit', addVehicleFromForm);
+document.getElementById('cancelVehicleBtn').addEventListener('click', hideVehicleForm);
 document.getElementById('resetBtn').addEventListener('click', () => {
   if (confirm('모든 mission 데이터를 초기화할까요?')) {
     state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
     state.selectedVehicleId = 'carrier_01';
+    hideVehicleForm();
     syncSettingsToForm();
     renderAll();
   }
@@ -172,13 +186,6 @@ for (const id of ['firmwareType', 'vehicleType', 'hoverSpeed', 'cruiseSpeed', 'u
   document.getElementById(id).addEventListener('change', saveQgcSettingsFromForm);
 }
 
-document.getElementById('defaultAlt').addEventListener('change', () => {});
-
-function selectedMission() {
-  return getSelectedMission();
-}
-
-
 function renderAll() {
   renderDroneList();
   renderConnectionForm();
@@ -188,24 +195,236 @@ function renderAll() {
   renderSanityCheck();
 }
 
+function getVehicleById(vehicleId) {
+  return getVehicles().find((vehicle) => vehicle.vehicle_id === vehicleId);
+}
+
+function generateVehicleId() {
+  let index = getVehicles().length + 1;
+  let vehicleId = `vehicle_${String(index).padStart(2, '0')}`;
+
+  while (getVehicleById(vehicleId)) {
+    index += 1;
+    vehicleId = `vehicle_${String(index).padStart(2, '0')}`;
+  }
+
+  return vehicleId;
+}
+
+function getNextSysid() {
+  const used = new Set(getVehicles().map((vehicle) => Number(vehicle.sysid)));
+
+  for (let sysid = 1; sysid <= 255; sysid += 1) {
+    if (!used.has(sysid)) return sysid;
+  }
+
+  return 255;
+}
+
+function getNextUdpPort() {
+  const ports = getVehicles()
+    .map((vehicle) => Number(vehicle.udp_port))
+    .filter(Number.isFinite);
+  const nextPort = ports.length ? Math.max(...ports) + 1 : 14550;
+  return Math.min(nextPort, 65535);
+}
+
+function getNextSortOrder(parentVehicleId) {
+  const siblings = getVehicles().filter(
+    (vehicle) => vehicle.parent_vehicle_id === parentVehicleId
+  );
+  const orders = siblings.map((vehicle) => Number(vehicle.sort_order)).filter(Number.isFinite);
+  return orders.length ? Math.max(...orders) + 1 : 1;
+}
+
+function getUniqueMissionId(vehicleId) {
+  const baseId = `mission_${vehicleId}`;
+  let missionId = baseId;
+  let suffix = 2;
+
+  while (state.missions.some((mission) => mission.mission_id === missionId)) {
+    missionId = `${baseId}_${suffix}`;
+    suffix += 1;
+  }
+
+  return missionId;
+}
+
+function expandVehicleAncestors(vehicleId) {
+  let currentId = vehicleId;
+
+  while (currentId) {
+    const vehicle = getVehicleById(currentId);
+    if (!vehicle) return;
+
+    vehicle.collapsed = false;
+    currentId = vehicle.parent_vehicle_id;
+  }
+}
+
+function populateVehicleParentOptions() {
+  const select = document.getElementById('vehicleParent');
+  select.innerHTML = '';
+
+  const topLevelOption = document.createElement('option');
+  topLevelOption.value = '';
+  topLevelOption.textContent = 'None (top-level)';
+  select.appendChild(topLevelOption);
+
+  for (const vehicle of getVehicles()) {
+    const option = document.createElement('option');
+    option.value = vehicle.vehicle_id;
+    option.textContent = `${vehicle.name} (${vehicle.vehicle_id})`;
+    select.appendChild(option);
+  }
+}
+
+function showVehicleForm() {
+  const vehicleId = generateVehicleId();
+
+  populateVehicleParentOptions();
+  document.getElementById('vehicleId').value = vehicleId;
+  document.getElementById('vehicleName').value = `Vehicle-${getVehicles().length + 1}`;
+  document.getElementById('vehicleRole').value = 'custom';
+  document.getElementById('vehicleSysid').value = getNextSysid();
+  document.getElementById('vehicleIp').value = '127.0.0.1';
+  document.getElementById('vehiclePort').value = getNextUdpPort();
+  document.getElementById('vehicleParent').value = '';
+  document.getElementById('vehicleColor').value =
+    VEHICLE_COLORS[getVehicles().length % VEHICLE_COLORS.length];
+  document.getElementById('vehicleForm').classList.remove('hidden');
+  document.getElementById('vehicleId').focus();
+}
+
+function hideVehicleForm() {
+  document.getElementById('vehicleForm').classList.add('hidden');
+}
+
+function addVehicleFromForm(event) {
+  event.preventDefault();
+
+  const vehicleId = document.getElementById('vehicleId').value.trim();
+  const name = document.getElementById('vehicleName').value.trim();
+  const role = document.getElementById('vehicleRole').value.trim();
+  const sysid = Number(document.getElementById('vehicleSysid').value);
+  const ip = document.getElementById('vehicleIp').value.trim();
+  const udpPort = Number(document.getElementById('vehiclePort').value);
+  const parentValue = document.getElementById('vehicleParent').value;
+  const parentVehicleId = parentValue || null;
+  const color = document.getElementById('vehicleColor').value;
+
+  if (!/^[A-Za-z0-9_-]+$/.test(vehicleId)) {
+    alert('Vehicle ID는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.');
+    return;
+  }
+
+  if (getVehicleById(vehicleId)) {
+    alert(`Vehicle ID "${vehicleId}"가 이미 존재합니다.`);
+    return;
+  }
+
+  if (!name || !role || !ip) {
+    alert('Name, Role, IP를 입력하세요.');
+    return;
+  }
+
+  if (!Number.isInteger(sysid) || sysid < 1 || sysid > 255) {
+    alert('SYSID는 1부터 255 사이의 정수여야 합니다.');
+    return;
+  }
+
+  if (!Number.isInteger(udpPort) || udpPort < 1 || udpPort > 65535) {
+    alert('UDP Port는 1부터 65535 사이의 정수여야 합니다.');
+    return;
+  }
+
+  if (parentVehicleId && !getVehicleById(parentVehicleId)) {
+    alert('선택한 parent vehicle이 존재하지 않습니다.');
+    return;
+  }
+
+  const vehicle = {
+    vehicle_id: vehicleId,
+    name,
+    role,
+    sysid,
+    ip,
+    udp_port: udpPort,
+    parent_vehicle_id: parentVehicleId,
+    sort_order: getNextSortOrder(parentVehicleId),
+    color,
+    collapsed: false,
+  };
+
+  state.vehicles.push(vehicle);
+  state.missions.push({
+    mission_id: getUniqueMissionId(vehicleId),
+    vehicle_id: vehicleId,
+    uploadState: 'Editing',
+    waypoints: [],
+  });
+
+  if (parentVehicleId) {
+    expandVehicleAncestors(parentVehicleId);
+  }
+
+  state.selectedVehicleId = vehicleId;
+  hideVehicleForm();
+  renderAll();
+}
+
+function getVehicleRelationships(vehicleId) {
+  return state.relationships.filter(
+    (relationship) =>
+      relationship.trigger_vehicle_id === vehicleId ||
+      relationship.target_vehicle_id === vehicleId
+  );
+}
+
+function deleteSelectedVehicle() {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) return;
+
+  const children = getChildVehicles(vehicle.vehicle_id);
+  if (children.length > 0) {
+    alert(`${vehicle.name} 아래에 child vehicle이 있어 삭제할 수 없습니다.`);
+    return;
+  }
+
+  const relationships = getVehicleRelationships(vehicle.vehicle_id);
+  if (relationships.length > 0) {
+    alert(`${vehicle.name}에 연결된 relationship이 있어 삭제할 수 없습니다.`);
+    return;
+  }
+
+  if (getVehicles().length === 1) {
+    alert('마지막 vehicle은 삭제할 수 없습니다.');
+    return;
+  }
+
+  if (!confirm(`${vehicle.name}과 해당 mission을 삭제할까요?`)) return;
+
+  state.vehicles = state.vehicles.filter(
+    (item) => item.vehicle_id !== vehicle.vehicle_id
+  );
+  state.missions = state.missions.filter(
+    (mission) => mission.vehicle_id !== vehicle.vehicle_id
+  );
+  state.selectedVehicleId = state.vehicles[0].vehicle_id;
+  hideVehicleForm();
+  renderAll();
+}
+
 function renderDroneList() {
   const list = document.getElementById('droneList');
   list.innerHTML = '';
 
   for (const vehicle of getTopLevelVehicles()) {
-    renderVehicleCard(list, vehicle, 0);
-
-    if (!vehicle.collapsed) {
-      const children = getChildVehicles(vehicle.vehicle_id);
-
-      for (const child of children) {
-        renderVehicleCard(list, child, 1);
-      }
-    }
+    renderVehicleTree(list, vehicle, 0);
   }
 }
 
-function renderVehicleCard(list, vehicle, depth) {
+function renderVehicleTree(list, vehicle, depth) {
   const mission = getMissionByVehicleId(vehicle.vehicle_id);
   const uploadState = mission.uploadState || 'Editing';
   const children = getChildVehicles(vehicle.vehicle_id);
@@ -214,6 +433,7 @@ function renderVehicleCard(list, vehicle, depth) {
 
   const card = document.createElement('div');
   card.className = 'drone-card' + (isSelected ? ' active' : '') + (depth > 0 ? ' child-card' : '');
+  card.style.setProperty('--tree-depth', depth);
 
   card.onclick = () => {
     state.selectedVehicleId = vehicle.vehicle_id;
@@ -221,7 +441,7 @@ function renderVehicleCard(list, vehicle, depth) {
   };
 
   const toggleButton = hasChildren
-    ? `<button class="tree-toggle" data-toggle="${vehicle.vehicle_id}">${vehicle.collapsed ? '▶' : '▼'}</button>`
+    ? `<button class="tree-toggle" data-toggle="${escapeHtml(vehicle.vehicle_id)}">${vehicle.collapsed ? '▶' : '▼'}</button>`
     : `<span class="tree-spacer"></span>`;
 
   const childSummary = hasChildren
@@ -232,13 +452,13 @@ function renderVehicleCard(list, vehicle, depth) {
     <div class="drone-head">
       <div class="drone-name">
         ${toggleButton}
-        <span>${vehicle.name}</span>
+        <span>${escapeHtml(vehicle.name)}</span>
       </div>
-      <div class="badge ${mission.waypoints.length ? 'ok' : 'warn'}">${uploadState}</div>
+      <div class="badge ${mission.waypoints.length ? 'ok' : 'warn'}">${escapeHtml(uploadState)}</div>
     </div>
-    <div class="kv"><span>Role</span><span>${vehicle.role}</span></div>
-    <div class="kv"><span>SYSID</span><span>${vehicle.sysid}</span></div>
-    <div class="kv"><span>UDP</span><span>${vehicle.ip}:${vehicle.udp_port}</span></div>
+    <div class="kv"><span>Role</span><span>${escapeHtml(vehicle.role)}</span></div>
+    <div class="kv"><span>SYSID</span><span>${escapeHtml(vehicle.sysid)}</span></div>
+    <div class="kv"><span>UDP</span><span>${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</span></div>
     <div class="kv"><span>WP</span><span>${mission.waypoints.length}</span></div>
     ${childSummary}
   `;
@@ -251,6 +471,12 @@ function renderVehicleCard(list, vehicle, depth) {
   }
 
   list.appendChild(card);
+
+  if (!vehicle.collapsed) {
+    for (const child of children) {
+      renderVehicleTree(list, child, depth + 1);
+    }
+  }
 }
 
 function renderConnectionForm() {
@@ -300,7 +526,7 @@ function nextAltitude(m) {
 }
 
 function addWaypoint(lat, lon) {
-  const m = selectedMission();
+  const m = getSelectedMission();
   m.waypoints.push({
     seq: m.waypoints.length + 1,
     lat: round(lat, 7),
@@ -314,7 +540,7 @@ function addWaypoint(lat, lon) {
 }
 
 function deleteWaypoint(index) {
-  const m = selectedMission();
+  const m = getSelectedMission();
   m.waypoints.splice(index, 1);
   resequence(m);
   renderAll();
@@ -322,7 +548,7 @@ function deleteWaypoint(index) {
 
 function clearSelectedMission() {
   const vehicle = getSelectedVehicle();
-  const mission = selectedMission();
+  const mission = getSelectedMission();
 
   if (mission.waypoints.length === 0) return;
 
@@ -340,7 +566,7 @@ function resequence(m) {
 
 function renderWaypointRows() {
   const tbody = document.getElementById('waypointRows');
-  const mission = selectedMission();
+  const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
 
   tbody.innerHTML = '';
@@ -353,13 +579,16 @@ function renderWaypointRows() {
     select.dataset.idx = idx;
     select.disabled = vehicle.role !== 'carrier';
 
-    for (const [value, label] of [
+    const actionOptions = [
       ['NONE', 'NONE'],
-      ['RELEASE_CHILD_1', 'Release C1'],
-      ['RELEASE_CHILD_2', 'Release C2'],
-      ['RELEASE_CHILD_3', 'Release C3'],
-      ['RELEASE_CHILD_4', 'Release C4'],
-    ]) {
+      ['RELEASE', 'RELEASE'],
+    ];
+
+    if (wp.action && !actionOptions.some(([value]) => value === wp.action)) {
+      actionOptions.push([wp.action, wp.action]);
+    }
+
+    for (const [value, label] of actionOptions) {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = label;
@@ -432,8 +661,12 @@ function renderMapItems() {
         weight: vehicle.vehicle_id === state.selectedVehicleId ? 3 : 2,
       }).addTo(map);
 
-      const action = wp.action && wp.action !== 'NONE' ? `<br><b>${wp.action}</b>` : '';
-      marker.bindPopup(`${vehicle.name} WP${wp.seq}<br>Alt ${wp.alt} m${action}`);
+      const action = wp.action && wp.action !== 'NONE'
+        ? `<br><b>${escapeHtml(wp.action)}</b>`
+        : '';
+      marker.bindPopup(
+        `${escapeHtml(vehicle.name)} WP${wp.seq}<br>Alt ${wp.alt} m${action}`
+      );
       markers[vehicle.vehicle_id].push(marker);
     });
 
@@ -448,7 +681,7 @@ function renderMapItems() {
 }
 
 function renderMissionSummary() {
-  const m = selectedMission();
+  const m = getSelectedMission();
   document.getElementById('wpCount').value = m.waypoints.length;
   document.getElementById('missionState').value = m.uploadState;
 }
@@ -475,7 +708,7 @@ function sanityCheckMission(mission, vehicle = getSelectedVehicle()) {
 }
 
 function renderSanityCheck() {
-  const mission = selectedMission();
+  const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
   const { errors, warnings } = sanityCheckMission(mission, vehicle);
 
@@ -542,7 +775,7 @@ function buildQgcPlan(m) {
 }
 
 function exportSelectedQgcPlan() {
-  const mission = selectedMission();
+  const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
   const { errors } = sanityCheckMission(mission, vehicle);
 
@@ -556,7 +789,65 @@ function exportSelectedQgcPlan() {
 }
 
 function exportPackageJson() {
-  downloadJson('fleet_mission_package.json', state);
+  const {
+    version,
+    vehicles,
+    missions,
+    relationships,
+    qgcPlanSettings,
+  } = state;
+
+  downloadJson('fleet_mission_package.json', {
+    version,
+    vehicles,
+    missions,
+    relationships,
+    qgcPlanSettings,
+  });
+}
+
+function isValidMissionPackage(imported) {
+  if (
+    !imported ||
+    !Array.isArray(imported.vehicles) ||
+    imported.vehicles.length === 0 ||
+    !Array.isArray(imported.missions) ||
+    !Array.isArray(imported.relationships) ||
+    !imported.qgcPlanSettings ||
+    typeof imported.qgcPlanSettings !== 'object' ||
+    Array.isArray(imported.qgcPlanSettings)
+  ) {
+    return false;
+  }
+
+  const vehicleIds = new Set(imported.vehicles.map((vehicle) => vehicle.vehicle_id));
+  if (vehicleIds.size !== imported.vehicles.length || vehicleIds.has(undefined)) return false;
+
+  for (const vehicle of imported.vehicles) {
+    if (
+      Object.prototype.hasOwnProperty.call(vehicle, 'waypoints') ||
+      (vehicle.parent_vehicle_id !== null && !vehicleIds.has(vehicle.parent_vehicle_id))
+    ) {
+      return false;
+    }
+
+    const ancestors = new Set([vehicle.vehicle_id]);
+    let parentId = vehicle.parent_vehicle_id;
+
+    while (parentId !== null) {
+      if (ancestors.has(parentId)) return false;
+      ancestors.add(parentId);
+      parentId = imported.vehicles.find((item) => item.vehicle_id === parentId).parent_vehicle_id;
+    }
+  }
+
+  return imported.missions.every((mission) =>
+    vehicleIds.has(mission.vehicle_id) &&
+    Array.isArray(mission.waypoints) &&
+    !['name', 'role', 'ip', 'udp_port', 'sysid'].some((field) =>
+      Object.prototype.hasOwnProperty.call(mission, field)
+    )
+  );
 }
 
 function importPackageJson(e) {
@@ -566,7 +857,8 @@ function importPackageJson(e) {
   reader.onload = () => {
     try {
       const imported = JSON.parse(reader.result);
-      if (!imported.missions || !imported.qgcPlanSettings) throw new Error('mission package 형식이 아닙니다.');
+      if (!isValidMissionPackage(imported)) throw new Error('mission package 형식이 아닙니다.');
+
       state = imported;
       state.selectedVehicleId = state.vehicles[0]?.vehicle_id || 'carrier_01';
       syncSettingsToForm();
@@ -594,6 +886,15 @@ function downloadJson(filename, obj) {
 function round(value, digits) {
   const f = Math.pow(10, digits);
   return Math.round(value * f) / f;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
 
 syncSettingsToForm();
