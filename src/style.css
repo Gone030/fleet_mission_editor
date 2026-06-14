@@ -134,3 +134,29 @@
     .leaflet-popup-content { color: #111827; font-size: 12px; }
     .hidden { display: none; }
     .spacer { flex: 1; }
+
+    .child-card {
+    margin-left: 18px;
+    border-left: 3px solid var(--line);
+    }
+
+    .tree-toggle {
+    width: 24px;
+    height: 24px;
+    margin-right: 6px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    }
+
+    .tree-spacer {
+    display: inline-block;
+    width: 30px;
+    }
+
+    .drone-name {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    }
