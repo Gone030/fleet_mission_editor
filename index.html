@@ -50,6 +50,13 @@
             </div>
             <div><label for="vehicleColor">Color</label><input id="vehicleColor" type="color" /></div>
           </div>
+          <div>
+            <label for="vehicleFirmwareProfile">Firmware Profile</label>
+            <select id="vehicleFirmwareProfile">
+              <option value="standard_px4">standard_px4</option>
+              <option value="px4_nav_ready_gate">px4_nav_ready_gate</option>
+            </select>
+          </div>
           <div class="vehicle-form-actions">
             <button id="createVehicleBtn" class="primary" type="submit">Create</button>
             <button id="cancelVehicleBtn" type="button">Cancel</button>
@@ -70,6 +77,13 @@
         <div class="grid2" style="margin-top:8px;">
           <div><label>SYSID</label><input id="connSysid" type="number" /></div>
           <div><label>역할</label><input id="connRole" disabled /></div>
+        </div>
+        <div style="margin-top:8px;">
+          <label for="connFirmwareProfile">Firmware Profile</label>
+          <select id="connFirmwareProfile">
+            <option value="standard_px4">standard_px4</option>
+            <option value="px4_nav_ready_gate">px4_nav_ready_gate</option>
+          </select>
         </div>
         <button id="saveConnBtn" style="width:100%; margin-top:10px;">연결 설정 저장</button>
       </div>
@@ -136,6 +150,37 @@
         <div class="hint" style="margin-top:10px;">
           지도 클릭 시 선택된 드론에 waypoint가 추가됩니다. 첫 고도는 기본 고도, 이후는 직전 waypoint 고도를 상속합니다.
         </div>
+      </div>
+
+      <div class="section">
+        <h2>Relationship Editor</h2>
+        <form id="relationshipForm" class="relationship-form">
+          <div>
+            <label for="relationshipTriggerWaypoint">Trigger Waypoint</label>
+            <select id="relationshipTriggerWaypoint"></select>
+          </div>
+          <div>
+            <label for="relationshipTargetVehicle">Target Vehicle</label>
+            <select id="relationshipTargetVehicle"></select>
+          </div>
+          <div>
+            <label for="relationshipActionType">Action</label>
+            <select id="relationshipActionType">
+              <option value="START_MISSION">START_MISSION</option>
+              <option value="RELEASE">RELEASE</option>
+              <option value="HOLD">HOLD</option>
+              <option value="RTL">RTL</option>
+              <option value="LAND">LAND</option>
+            </select>
+          </div>
+          <button id="addRelationshipBtn" class="primary" type="submit">Add Relationship</button>
+        </form>
+        <div class="hint relationship-hint">
+          Relationship은 Fleet Mission Package에만 저장되며 QGC .plan에는 포함되지 않습니다.
+          `px4_nav_ready_gate` target의 START_MISSION은 AUTO_MISSION 직접 진입이 아니라
+          Navigation Ready Gate trigger로 해석됩니다.
+        </div>
+        <div id="relationshipList" class="relationship-list"></div>
       </div>
 
       <div class="section">

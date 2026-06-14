@@ -141,6 +141,49 @@
     .wp-table input, .wp-table select { padding: 5px 6px; font-size: 12px; min-width: 0; }
     .wp-table .small { width: 66px; }
     .wp-table .latlon { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .relationship-form {
+      display: grid;
+      gap: 8px;
+    }
+    .relationship-form button { width: 100%; }
+    .relationship-hint { margin-top: 10px; }
+    .relationship-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .relationship-card {
+      display: grid;
+      gap: 6px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1220;
+    }
+    .relationship-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .relationship-card-title {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .relationship-card button {
+      padding: 4px 7px;
+      font-size: 11px;
+    }
+    .relationship-meaning {
+      color: var(--warn);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .empty-state {
+      color: var(--muted);
+      font-size: 12px;
+    }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .status-box {
       border: 1px solid var(--line);
