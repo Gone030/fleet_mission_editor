@@ -1,0 +1,12 @@
+AGENT.md
+docs/
+docs-local/
+.venv/
+venv/
+env/
+
+__pychech__/
+*.py[cod]
+*$py.class
+
+*.log
