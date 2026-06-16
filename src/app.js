@@ -1,79 +1,7 @@
 const INITIAL_MISSION_PACKAGE = {
   version: 1,
-  vehicles: [
-    {
-      vehicle_id: 'carrier_01',
-      name: 'Carrier-01',
-      role: 'carrier',
-      sysid: 1,
-      ip: '192.168.0.101',
-      udp_port: 14550,
-      firmware_profile: 'standard_px4',
-      parent_vehicle_id: null,
-      sort_order: 1,
-      color: '#2563eb',
-      collapsed: true,
-    },
-    {
-      vehicle_id: 'child_01',
-      name: 'Child-01',
-      role: 'child',
-      sysid: 11,
-      ip: '192.168.0.111',
-      udp_port: 14551,
-      firmware_profile: 'px4_nav_ready_gate',
-      parent_vehicle_id: 'carrier_01',
-      sort_order: 1,
-      color: '#dc2626',
-      collapsed: false,
-    },
-    {
-      vehicle_id: 'child_02',
-      name: 'Child-02',
-      role: 'child',
-      sysid: 12,
-      ip: '192.168.0.112',
-      udp_port: 14552,
-      firmware_profile: 'px4_nav_ready_gate',
-      parent_vehicle_id: 'carrier_01',
-      sort_order: 2,
-      color: '#16a34a',
-      collapsed: false,
-    },
-    {
-      vehicle_id: 'child_03',
-      name: 'Child-03',
-      role: 'child',
-      sysid: 13,
-      ip: '192.168.0.113',
-      udp_port: 14553,
-      firmware_profile: 'px4_nav_ready_gate',
-      parent_vehicle_id: 'carrier_01',
-      sort_order: 3,
-      color: '#ca8a04',
-      collapsed: false,
-    },
-    {
-      vehicle_id: 'child_04',
-      name: 'Child-04',
-      role: 'child',
-      sysid: 14,
-      ip: '192.168.0.114',
-      udp_port: 14554,
-      firmware_profile: 'px4_nav_ready_gate',
-      parent_vehicle_id: 'carrier_01',
-      sort_order: 4,
-      color: '#9333ea',
-      collapsed: false,
-    },
-  ],
-  missions: [
-    { mission_id: 'mission_carrier_01', vehicle_id: 'carrier_01', waypoints: [] },
-    { mission_id: 'mission_child_01', vehicle_id: 'child_01', waypoints: [] },
-    { mission_id: 'mission_child_02', vehicle_id: 'child_02', waypoints: [] },
-    { mission_id: 'mission_child_03', vehicle_id: 'child_03', waypoints: [] },
-    { mission_id: 'mission_child_04', vehicle_id: 'child_04', waypoints: [] },
-  ],
+  vehicles: [],
+  missions: [],
   relationships: [],
   qgcPlanSettings: {
     firmwareType: 12,
@@ -86,17 +14,40 @@ const INITIAL_MISSION_PACKAGE = {
 };
 
 let state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
-state.selectedVehicleId = 'carrier_01';
+state.selectedVehicleId = null;
+
+const runtimeState = {
+  backendUrl: getDefaultBackendUrl(),
+  status: 'BACKEND OFFLINE',
+  service: '',
+  version: '',
+  message: 'Local runtime backend health check only. MAVLink, UDP companion, trigger send are not implemented here.',
+  vehicleConnections: {},
+  dronesConnecting: false,
+  backendCheckInFlight: false,
+  healthMonitorId: null,
+};
+
+function getDefaultBackendUrl() {
+  if (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://')) {
+    return window.location.origin;
+  }
+
+  return 'http://127.0.0.1:8000';
+}
 
 function getVehicles() {
   return state.vehicles;
 }
 
 function getSelectedVehicle() {
+  if (!state.selectedVehicleId) return null;
   return state.vehicles.find((vehicle) => vehicle.vehicle_id === state.selectedVehicleId);
 }
 
 function getMissionByVehicleId(vehicleId) {
+  if (!vehicleId) return null;
+
   let mission = state.missions.find((item) => item.vehicle_id === vehicleId);
 
   if (!mission) {
@@ -191,13 +142,17 @@ document.getElementById('vehicleRole').addEventListener('change', syncFirmwarePr
 document.getElementById('resetBtn').addEventListener('click', () => {
   if (confirm('모든 mission 데이터를 초기화할까요?')) {
     state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
-    state.selectedVehicleId = 'carrier_01';
+    state.selectedVehicleId = null;
     hideVehicleForm();
     syncSettingsToForm();
     renderAll();
   }
 });
 document.getElementById('saveConnBtn').addEventListener('click', saveConnectionForm);
+document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
+document.getElementById('refreshDroneStatusBtn').addEventListener('click', refreshDroneStatus);
+document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
+document.getElementById('backendUrl').addEventListener('change', saveBackendUrl);
 document.getElementById('exportQgcBtn').addEventListener('click', exportSelectedQgcPlan);
 document.getElementById('clearMissionBtn').addEventListener('click', clearSelectedMission);
 document.getElementById('relationshipForm').addEventListener('submit', addRelationshipFromForm);
@@ -215,6 +170,7 @@ function renderAll() {
   renderRelationshipEditor();
   renderRelationshipList();
   renderSanityCheck();
+  renderRuntimeConnection();
 }
 
 function getVehicleById(vehicleId) {
@@ -463,6 +419,14 @@ function renderDroneList() {
   const list = document.getElementById('droneList');
   list.innerHTML = '';
 
+  if (getVehicles().length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No vehicles yet. Add a vehicle first.';
+    list.appendChild(empty);
+    return;
+  }
+
   for (const vehicle of getTopLevelVehicles()) {
     renderVehicleTree(list, vehicle, 0);
   }
@@ -526,26 +490,494 @@ function renderVehicleTree(list, vehicle, depth) {
 
 function renderConnectionForm() {
   const vehicle = getSelectedVehicle();
-  if (!vehicle) return;
+  const ids = ['connName', 'connIp', 'connPort', 'connSysid', 'connRole', 'connFirmwareProfile'];
+  const saveButton = document.getElementById('saveConnBtn');
 
+  if (!vehicle) {
+    for (const id of ids) {
+      const input = document.getElementById(id);
+      input.value = '';
+      input.disabled = true;
+    }
+    saveButton.disabled = true;
+    clearConnectionWarning();
+    return;
+  }
+
+  document.getElementById('connName').value = vehicle.name;
   document.getElementById('connIp').value = vehicle.ip;
   document.getElementById('connPort').value = vehicle.udp_port;
   document.getElementById('connSysid').value = vehicle.sysid;
   document.getElementById('connRole').value = vehicle.role;
   document.getElementById('connFirmwareProfile').value = vehicle.firmware_profile;
+  for (const id of ids) {
+    document.getElementById(id).disabled = false;
+  }
+  saveButton.disabled = false;
+  clearConnectionWarning();
 }
 
-function saveConnectionForm() {
-  const vehicle = getSelectedVehicle();
-  if (!vehicle) return;
+function getConnectionFormValues() {
+  return {
+    name: document.getElementById('connName').value.trim(),
+    role: document.getElementById('connRole').value.trim(),
+    firmware_profile: document.getElementById('connFirmwareProfile').value,
+    sysid: Number(document.getElementById('connSysid').value),
+    ip: document.getElementById('connIp').value.trim(),
+    udp_port: Number(document.getElementById('connPort').value),
+  };
+}
 
-  vehicle.ip = document.getElementById('connIp').value.trim();
-  vehicle.udp_port = Number(document.getElementById('connPort').value);
-  vehicle.sysid = Number(document.getElementById('connSysid').value);
-  vehicle.role = document.getElementById('connRole').value.trim();
-  vehicle.firmware_profile = document.getElementById('connFirmwareProfile').value;
+function validateVehicleConnectionValues(values, label = 'Selected vehicle') {
+  const warnings = [];
+
+  if (!values.name) warnings.push(`${label}: name을 입력하세요.`);
+  if (!values.role) warnings.push(`${label}: role을 입력하세요.`);
+  if (!values.ip) warnings.push(`${label}: IP가 비어 있습니다.`);
+  if (!Number.isInteger(values.udp_port) || values.udp_port < 1 || values.udp_port > 65535) {
+    warnings.push(`${label}: UDP port는 1~65535 사이의 숫자여야 합니다.`);
+  }
+  if (!Number.isInteger(values.sysid) || values.sysid < 1 || values.sysid > 255) {
+    warnings.push(`${label}: SYSID는 1~255 사이의 숫자여야 합니다.`);
+  }
+  if (!FIRMWARE_PROFILES.includes(values.firmware_profile)) {
+    warnings.push(`${label}: 유효한 firmware profile을 선택하세요.`);
+  }
+
+  return warnings;
+}
+
+function validateVehicleForRuntime(vehicle) {
+  return validateVehicleConnectionValues(
+    {
+      name: String(vehicle.name || '').trim(),
+      role: String(vehicle.role || '').trim(),
+      firmware_profile: vehicle.firmware_profile,
+      sysid: Number(vehicle.sysid),
+      ip: String(vehicle.ip || '').trim(),
+      udp_port: Number(vehicle.udp_port),
+    },
+    vehicle.name || vehicle.vehicle_id
+  );
+}
+
+function showConnectionWarning(warnings) {
+  const warning = document.getElementById('connectionWarning');
+  warning.textContent = warnings.join('\n');
+  warning.classList.remove('hidden');
+}
+
+function clearConnectionWarning() {
+  const warning = document.getElementById('connectionWarning');
+  warning.textContent = '';
+  warning.classList.add('hidden');
+}
+
+function validateAllVehicleConnections() {
+  return getVehicles().flatMap(validateVehicleForRuntime);
+}
+
+function saveConnectionForm({ silent = false } = {}) {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) {
+    const warnings = ['No vehicle selected. Add a vehicle first.'];
+    showConnectionWarning(warnings);
+    if (!silent) alert(warnings[0]);
+    return false;
+  }
+
+  const values = getConnectionFormValues();
+  const warnings = validateVehicleConnectionValues(values, vehicle.name || vehicle.vehicle_id);
+  if (warnings.length > 0) {
+    showConnectionWarning(warnings);
+    if (!silent) alert('Connection 설정을 저장할 수 없습니다:\n- ' + warnings.join('\n- '));
+    return false;
+  }
+
+  vehicle.name = values.name;
+  vehicle.role = values.role;
+  vehicle.firmware_profile = values.firmware_profile;
+  vehicle.sysid = values.sysid;
+  vehicle.ip = values.ip;
+  vehicle.udp_port = values.udp_port;
+  clearConnectionWarning();
 
   renderAll();
+  return true;
+}
+
+function normalizeBackendUrl(value) {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function saveBackendUrl() {
+  runtimeState.backendUrl = normalizeBackendUrl(
+    document.getElementById('backendUrl').value
+  );
+  if (!runtimeState.backendUrl) {
+    runtimeState.status = 'ERROR';
+    runtimeState.message = 'Backend URL을 입력하세요.';
+    runtimeState.service = '';
+    runtimeState.version = '';
+  }
+  renderRuntimeConnection();
+}
+
+function setRuntimeStatus(status, message = '') {
+  runtimeState.status = status;
+  runtimeState.message = message || runtimeState.message;
+  renderRuntimeConnection();
+}
+
+async function connectBackend() {
+  await checkBackendHealth({ manual: true });
+}
+
+async function checkBackendHealth({ manual = false } = {}) {
+  if (runtimeState.backendCheckInFlight) return;
+
+  saveBackendUrl();
+  if (!runtimeState.backendUrl) return;
+
+  runtimeState.backendCheckInFlight = true;
+  if (manual || runtimeState.status !== 'BACKEND ONLINE') {
+    setRuntimeStatus('CONNECTING', 'Checking backend health...');
+  }
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/health`, {
+      method: 'GET',
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const health = await response.json();
+    if (!health || health.ok !== true) {
+      throw new Error('Invalid health response');
+    }
+
+    runtimeState.service = health.service || 'unknown service';
+    runtimeState.version = health.version || 'unknown version';
+    setRuntimeStatus(
+      'BACKEND ONLINE',
+      `${runtimeState.service} ${runtimeState.version} online.`
+    );
+  } catch (error) {
+    runtimeState.service = '';
+    runtimeState.version = '';
+    const isAbort = error.name === 'AbortError';
+    setRuntimeStatus(
+      isAbort ? 'BACKEND OFFLINE' : 'ERROR',
+      isAbort
+        ? 'Backend health check timed out.'
+        : `Backend health check failed: ${error.message}`
+    );
+  } finally {
+    runtimeState.backendCheckInFlight = false;
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function startBackendHealthMonitor() {
+  checkBackendHealth();
+  runtimeState.healthMonitorId = window.setInterval(() => {
+    checkBackendHealth();
+  }, 3000);
+}
+
+function buildDroneConnectionPayload() {
+  return getVehicles().map((vehicle) => ({
+    vehicle_id: vehicle.vehicle_id,
+    name: vehicle.name,
+    role: vehicle.role,
+    ip: vehicle.ip,
+    udp_port: vehicle.udp_port,
+    firmware_profile: vehicle.firmware_profile,
+  }));
+}
+
+function markVehiclesConnecting() {
+  for (const vehicle of getVehicles()) {
+    runtimeState.vehicleConnections[vehicle.vehicle_id] = {
+      vehicle_id: vehicle.vehicle_id,
+      name: vehicle.name,
+      role: vehicle.role,
+      ip: vehicle.ip,
+      udp_port: vehicle.udp_port,
+      firmware_profile: vehicle.firmware_profile,
+      connection_state: 'CONNECTING',
+      companion_state: 'CONNECTING',
+      fc_connected: 'UNKNOWN',
+      last_seen_ms: null,
+      last_fc_heartbeat_ms: null,
+      last_trigger_seq: null,
+      last_trigger_state: 'UNKNOWN',
+      last_trigger_reason: null,
+      reason: 'ping_sent',
+      message: 'Waiting for UDP PONG...',
+    };
+  }
+}
+
+function applyDroneStatusResults(results) {
+  const nextConnections = {};
+  for (const vehicle of getVehicles()) {
+    const result = results[vehicle.vehicle_id];
+    nextConnections[vehicle.vehicle_id] = {
+      vehicle_id: vehicle.vehicle_id,
+      name: vehicle.name,
+      role: vehicle.role,
+      ip: vehicle.ip,
+      udp_port: vehicle.udp_port,
+      firmware_profile: vehicle.firmware_profile,
+      connection_state: result?.connection_state || result?.status || 'UNKNOWN',
+      companion_state: result?.companion_state || result?.status || 'UNKNOWN',
+      fc_connected: result?.fc_connected || 'UNKNOWN',
+      last_seen_ms: result?.last_seen_ms ?? null,
+      last_fc_heartbeat_ms: result?.last_fc_heartbeat_ms ?? null,
+      last_trigger_seq: result?.last_trigger_seq ?? null,
+      last_trigger_state: result?.last_trigger_state || 'UNKNOWN',
+      last_trigger_reason: result?.last_trigger_reason ?? null,
+      reason: result?.reason || '',
+      message: result?.message || '',
+      seq: result?.seq,
+      latency_ms: result?.latency_ms,
+    };
+  }
+  runtimeState.vehicleConnections = nextConnections;
+}
+
+function normalizeDroneStatusResponse(responseBody) {
+  if (responseBody?.results && typeof responseBody.results === 'object') {
+    return responseBody.results;
+  }
+
+  if (Array.isArray(responseBody?.vehicles)) {
+    return Object.fromEntries(
+      responseBody.vehicles.map((vehicle) => [vehicle.vehicle_id, vehicle])
+    );
+  }
+
+  return {};
+}
+
+async function refreshDroneStatus() {
+  saveBackendUrl();
+  if (!runtimeState.backendUrl) return;
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/drones/status`, {
+      method: 'GET',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const statusBody = await response.json();
+    if (!statusBody || statusBody.ok !== true) {
+      throw new Error('Invalid drone status response');
+    }
+
+    applyDroneStatusResults(normalizeDroneStatusResponse(statusBody));
+    renderRuntimeConnection();
+  } catch (error) {
+    setRuntimeStatus('ERROR', `Drone status refresh failed: ${error.message}`);
+  }
+}
+
+async function connectDrones() {
+  if (getVehicles().length === 0) {
+    const warnings = ['No vehicles yet. Add a vehicle first.'];
+    showConnectionWarning(warnings);
+    alert(warnings[0]);
+    return;
+  }
+
+  if (!saveConnectionForm()) return;
+
+  const connectionWarnings = validateAllVehicleConnections();
+  if (connectionWarnings.length > 0) {
+    showConnectionWarning(connectionWarnings);
+    alert('Connect Drones를 실행할 수 없습니다:\n- ' + connectionWarnings.join('\n- '));
+    return;
+  }
+
+  saveBackendUrl();
+  if (!runtimeState.backendUrl) return;
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
+    return;
+  }
+
+  runtimeState.dronesConnecting = true;
+  markVehiclesConnecting();
+  setRuntimeStatus(
+    runtimeState.status === 'BACKEND ONLINE' ? 'BACKEND ONLINE' : 'CONNECTING',
+    'Checking drone companion UDP PONG responses...'
+  );
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/drones/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ vehicles: buildDroneConnectionPayload() }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const connectionResult = await response.json();
+    if (!connectionResult || connectionResult.ok !== true || !connectionResult.results) {
+      throw new Error('Invalid drone connection response');
+    }
+
+    const results = normalizeDroneStatusResponse(connectionResult);
+    applyDroneStatusResults(results);
+    const resultValues = Object.values(results);
+    const connectedCount = resultValues.filter(
+      (vehicle) => vehicle.companion_state === 'CONNECTED'
+    ).length;
+    setRuntimeStatus(
+      'BACKEND ONLINE',
+      `Drone companion check complete: ${connectedCount}/${resultValues.length} companion connected.`
+    );
+    await refreshDroneStatus();
+  } catch (error) {
+    for (const vehicle of getVehicles()) {
+      runtimeState.vehicleConnections[vehicle.vehicle_id] = {
+        vehicle_id: vehicle.vehicle_id,
+        name: vehicle.name,
+        role: vehicle.role,
+        ip: vehicle.ip,
+        udp_port: vehicle.udp_port,
+        firmware_profile: vehicle.firmware_profile,
+        connection_state: 'ERROR',
+        companion_state: 'ERROR',
+        fc_connected: 'UNKNOWN',
+        last_seen_ms: null,
+        last_fc_heartbeat_ms: null,
+        last_trigger_seq: null,
+        last_trigger_state: 'UNKNOWN',
+        last_trigger_reason: null,
+        reason: 'request_failed',
+        message: error.message,
+      };
+    }
+    setRuntimeStatus('ERROR', `Drone companion check failed: ${error.message}`);
+  } finally {
+    runtimeState.dronesConnecting = false;
+    renderRuntimeConnection();
+  }
+}
+
+function getVehicleConnection(vehicle) {
+  return runtimeState.vehicleConnections[vehicle.vehicle_id] || {
+    vehicle_id: vehicle.vehicle_id,
+    name: vehicle.name,
+    role: vehicle.role,
+    ip: vehicle.ip,
+    udp_port: vehicle.udp_port,
+    firmware_profile: vehicle.firmware_profile,
+    connection_state: 'UNKNOWN',
+    companion_state: 'UNKNOWN',
+    fc_connected: 'UNKNOWN',
+    last_seen_ms: null,
+    last_fc_heartbeat_ms: null,
+    last_trigger_seq: null,
+    last_trigger_state: 'UNKNOWN',
+    last_trigger_reason: null,
+    reason: '',
+    message: '',
+  };
+}
+
+function renderRuntimeConnection() {
+  const statusBadge = document.getElementById('backendStatusBadge');
+  const version = document.getElementById('backendVersion');
+  const message = document.getElementById('backendMessage');
+  const backendUrl = document.getElementById('backendUrl');
+  const connectButton = document.getElementById('connectBackendBtn');
+  const refreshDroneStatusButton = document.getElementById('refreshDroneStatusBtn');
+  const connectDronesButton = document.getElementById('connectDronesBtn');
+  const vehicleConnectionList = document.getElementById('vehicleConnectionList');
+  const statusClass = {
+    'BACKEND OFFLINE': 'is-offline',
+    'BACKEND ONLINE': 'is-online',
+    CONNECTING: 'is-connecting',
+    ERROR: 'is-error',
+  }[runtimeState.status] || 'is-error';
+
+  statusBadge.className = `runtime-status ${statusClass}`;
+  statusBadge.textContent = runtimeState.status;
+  version.textContent = runtimeState.version
+    ? `${runtimeState.service} ${runtimeState.version}`
+    : 'not connected';
+  message.textContent = runtimeState.message;
+  backendUrl.value = runtimeState.backendUrl;
+  backendUrl.disabled = runtimeState.status === 'CONNECTING';
+  connectButton.disabled = runtimeState.status === 'CONNECTING';
+  refreshDroneStatusButton.disabled = runtimeState.status !== 'BACKEND ONLINE';
+  connectDronesButton.disabled =
+    runtimeState.status !== 'BACKEND ONLINE' || runtimeState.dronesConnecting;
+
+  vehicleConnectionList.innerHTML = '';
+  if (getVehicles().length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No vehicles yet. Add a vehicle first.';
+    vehicleConnectionList.appendChild(empty);
+    return;
+  }
+
+  for (const vehicle of getVehicles()) {
+    const connection = getVehicleConnection(vehicle);
+    const companionState = connection.companion_state || connection.connection_state || 'UNKNOWN';
+    const fcState = connection.fc_connected || 'UNKNOWN';
+    const statusClassName = {
+      UNKNOWN: 'is-unknown',
+      CONNECTING: 'is-connecting',
+      CONNECTED: 'is-connected',
+      OFFLINE: 'is-offline',
+      ERROR: 'is-error',
+    }[companionState] || 'is-error';
+    const fcClassName = {
+      UNKNOWN: 'is-unknown',
+      CONNECTED: 'is-connected',
+      DISCONNECTED: 'is-offline',
+    }[fcState] || 'is-unknown';
+    const row = document.createElement('div');
+    row.className = 'vehicle-connection-row';
+    row.innerHTML = `
+      <div class="vehicle-connection-name">
+        <div>${escapeHtml(vehicle.name)} (${escapeHtml(vehicle.vehicle_id)})</div>
+        <div class="vehicle-connection-meta">${escapeHtml(vehicle.role)} · ${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</div>
+        <div class="vehicle-connection-details">
+          <span>Last seen: ${escapeHtml(formatRuntimeTime(connection.last_seen_ms))}</span>
+          <span>FC heartbeat: ${escapeHtml(formatRuntimeTime(connection.last_fc_heartbeat_ms))}</span>
+          <span>Trigger seq: ${escapeHtml(formatRuntimeValue(connection.last_trigger_seq))}</span>
+          <span>Trigger state: ${escapeHtml(connection.last_trigger_state || 'UNKNOWN')}</span>
+          <span>Reason: ${escapeHtml(connection.last_trigger_reason || connection.reason || '-')}</span>
+        </div>
+      </div>
+      <div class="vehicle-connection-badges">
+        <span class="vehicle-connection-status ${statusClassName}" title="${escapeHtml(connection.message || '')}">Companion ${escapeHtml(companionState)}</span>
+        <span class="vehicle-connection-status ${fcClassName}">FC ${escapeHtml(fcState)}</span>
+      </div>
+    `;
+    vehicleConnectionList.appendChild(row);
+  }
 }
 
 function syncSettingsToForm() {
@@ -574,6 +1006,11 @@ function nextAltitude(m) {
 
 function addWaypoint(lat, lon) {
   const m = getSelectedMission();
+  if (!m) {
+    alert('Add a vehicle before adding waypoints.');
+    return;
+  }
+
   m.waypoints.push({
     seq: m.waypoints.length + 1,
     lat: round(lat, 7),
@@ -588,6 +1025,8 @@ function addWaypoint(lat, lon) {
 
 function deleteWaypoint(index) {
   const m = getSelectedMission();
+  if (!m) return;
+
   const waypoint = m.waypoints[index];
   const relationships = getWaypointRelationships(m.vehicle_id, waypoint.seq);
 
@@ -612,6 +1051,7 @@ function deleteWaypoint(index) {
 function clearSelectedMission() {
   const vehicle = getSelectedVehicle();
   const mission = getSelectedMission();
+  if (!vehicle || !mission) return;
 
   if (mission.waypoints.length === 0) return;
 
@@ -641,6 +1081,13 @@ function renderWaypointRows() {
   const vehicle = getSelectedVehicle();
 
   tbody.innerHTML = '';
+
+  if (!mission || !vehicle) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="empty-state">No vehicle selected.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
 
   mission.waypoints.forEach((wp, idx) => {
     const tr = document.createElement('tr');
@@ -753,8 +1200,10 @@ function renderMapItems() {
 
 function renderMissionSummary() {
   const m = getSelectedMission();
-  document.getElementById('wpCount').value = m.waypoints.length;
-  document.getElementById('missionState').value = m.uploadState;
+  document.getElementById('wpCount').value = m ? m.waypoints.length : 0;
+  document.getElementById('missionState').value = m ? m.uploadState : 'No vehicle';
+  document.getElementById('exportQgcBtn').disabled = !m;
+  document.getElementById('clearMissionBtn').disabled = !m || m.waypoints.length === 0;
 }
 
 function generateRelationshipId() {
@@ -836,6 +1285,16 @@ function renderRelationshipEditor() {
   const addButton = document.getElementById('addRelationshipBtn');
 
   waypointSelect.innerHTML = '';
+  targetSelect.innerHTML = '';
+
+  if (!mission || !selectedVehicle) {
+    waypointSelect.disabled = true;
+    targetSelect.disabled = true;
+    actionSelect.disabled = true;
+    addButton.disabled = true;
+    return;
+  }
+
   for (const waypoint of mission.waypoints) {
     const option = document.createElement('option');
     option.value = waypoint.seq;
@@ -843,7 +1302,6 @@ function renderRelationshipEditor() {
     waypointSelect.appendChild(option);
   }
 
-  targetSelect.innerHTML = '';
   for (const vehicle of getVehicles()) {
     if (vehicle.vehicle_id === selectedVehicle.vehicle_id) continue;
 
@@ -864,12 +1322,18 @@ function addRelationshipFromForm(event) {
   event.preventDefault();
 
   const triggerVehicle = getSelectedVehicle();
+  if (!triggerVehicle) {
+    alert('Add a vehicle before adding relationships.');
+    return;
+  }
+
   const triggerWaypointId = Number(
     document.getElementById('relationshipTriggerWaypoint').value
   );
   const targetVehicleId = document.getElementById('relationshipTargetVehicle').value;
   const actionType = document.getElementById('relationshipActionType').value;
   const mission = getSelectedMission();
+  if (!mission) return;
 
   if (!mission.waypoints.some((waypoint) => waypoint.seq === triggerWaypointId)) {
     alert('유효한 trigger waypoint를 선택하세요.');
@@ -1007,6 +1471,11 @@ function sanityCheckMission(mission, vehicle = getSelectedVehicle()) {
   const errors = [];
   const warnings = [];
 
+  if (!mission || !vehicle) {
+    errors.push('vehicle이 없습니다. Add Vehicle로 먼저 등록하세요.');
+    return { errors, warnings };
+  }
+
   if (mission.waypoints.length === 0) errors.push('waypoint가 없습니다. QGC .plan export 불가.');
 
   for (const wp of mission.waypoints) {
@@ -1031,10 +1500,10 @@ function renderSanityCheck() {
 
   const lines = [];
 
-  lines.push(`Selected: ${vehicle.name}`);
-  lines.push(`SYSID: ${vehicle.sysid}`);
-  lines.push(`UDP: ${vehicle.ip}:${vehicle.udp_port}`);
-  lines.push(`Waypoints: ${mission.waypoints.length}`);
+  lines.push(`Selected: ${vehicle ? vehicle.name : 'None'}`);
+  lines.push(`SYSID: ${vehicle ? vehicle.sysid : '-'}`);
+  lines.push(`UDP: ${vehicle ? `${vehicle.ip}:${vehicle.udp_port}` : '-'}`);
+  lines.push(`Waypoints: ${mission ? mission.waypoints.length : 0}`);
   lines.push(`QGC export: ${errors.length ? 'BLOCKED' : 'READY'}`);
 
   if (errors.length) lines.push('\nErrors:\n- ' + errors.join('\n- '));
@@ -1094,6 +1563,11 @@ function buildQgcPlan(m) {
 function exportSelectedQgcPlan() {
   const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
+  if (!mission || !vehicle) {
+    alert('QGC .plan export 불가: vehicle을 먼저 추가하세요.');
+    return;
+  }
+
   const { errors } = sanityCheckMission(mission, vehicle);
 
   if (errors.length) {
@@ -1184,7 +1658,6 @@ function isValidMissionPackage(imported) {
   if (
     !imported ||
     !Array.isArray(imported.vehicles) ||
-    imported.vehicles.length === 0 ||
     !Array.isArray(imported.missions) ||
     !Array.isArray(imported.relationships) ||
     !imported.qgcPlanSettings ||
@@ -1281,7 +1754,7 @@ function importPackageJson(e) {
       }
 
       state = imported;
-      state.selectedVehicleId = state.vehicles[0]?.vehicle_id || 'carrier_01';
+      state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
       syncSettingsToForm();
       renderAll();
       if (warnings.length > 0) {
@@ -1312,6 +1785,17 @@ function round(value, digits) {
   return Math.round(value * f) / f;
 }
 
+function formatRuntimeTime(value) {
+  if (!value) return '-';
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleTimeString();
+}
+
+function formatRuntimeValue(value) {
+  return value === null || value === undefined || value === '' ? '-' : value;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -1323,3 +1807,4 @@ function escapeHtml(value) {
 
 syncSettingsToForm();
 renderAll();
+startBackendHealthMonitor();

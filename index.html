@@ -12,7 +12,7 @@
   <header>
     <div>
       <span class="title">Fleet Mission Editor</span>
-      <span class="subtitle">모드론 1 + 자드론 4 mission editor</span>
+      <span class="subtitle">multi-vehicle mission editor</span>
     </div>
     <div class="toolbar">
       <button id="exportPackageBtn">Mission Package JSON 저장</button>
@@ -66,26 +66,55 @@
       </div>
 
       <div class="section">
-        <h2>연결 설정</h2>
+        <h2>Vehicle Connection Settings</h2>
         <div class="hint" style="margin-bottom: 10px;">
-          이 스켈레톤은 브라우저 기반이라 실제 UDP 연결은 하지 않습니다. 여기서는 드론별 IP/Port/SYSID 설정을 mission package에 저장합니다.
+          선택된 vehicle의 실제 companion 연결 정보를 수정합니다. 저장된 값은 mission package에 포함되고 Connect Drones에 사용됩니다.
+        </div>
+        <div>
+          <label for="connName">Name</label>
+          <input id="connName" />
         </div>
         <div class="grid2">
-          <div><label>IP</label><input id="connIp" /></div>
-          <div><label>UDP Port</label><input id="connPort" type="number" /></div>
+          <div><label for="connRole">Role</label><input id="connRole" /></div>
+          <div>
+            <label for="connFirmwareProfile">Firmware Profile</label>
+            <select id="connFirmwareProfile">
+              <option value="standard_px4">standard_px4</option>
+              <option value="px4_nav_ready_gate">px4_nav_ready_gate</option>
+            </select>
+          </div>
         </div>
         <div class="grid2" style="margin-top:8px;">
-          <div><label>SYSID</label><input id="connSysid" type="number" /></div>
-          <div><label>역할</label><input id="connRole" disabled /></div>
+          <div><label for="connSysid">SYSID</label><input id="connSysid" type="number" min="1" max="255" /></div>
+          <div><label for="connPort">UDP Port</label><input id="connPort" type="number" min="1" max="65535" /></div>
         </div>
         <div style="margin-top:8px;">
-          <label for="connFirmwareProfile">Firmware Profile</label>
-          <select id="connFirmwareProfile">
-            <option value="standard_px4">standard_px4</option>
-            <option value="px4_nav_ready_gate">px4_nav_ready_gate</option>
-          </select>
+          <label for="connIp">IP</label>
+          <input id="connIp" />
         </div>
+        <div id="connectionWarning" class="form-warning hidden"></div>
         <button id="saveConnBtn" style="width:100%; margin-top:10px;">연결 설정 저장</button>
+      </div>
+
+      <div class="section">
+        <h2>Runtime Connection</h2>
+        <div class="runtime-status-row">
+          <span id="backendStatusBadge" class="runtime-status is-offline">BACKEND OFFLINE</span>
+          <span id="backendVersion" class="runtime-version">not connected</span>
+        </div>
+        <div style="margin-top:10px;">
+          <label for="backendUrl">Backend URL</label>
+          <input id="backendUrl" type="url" value="http://127.0.0.1:8000" />
+        </div>
+        <div class="runtime-actions">
+          <button id="connectBackendBtn" class="primary" type="button">Retry Backend Check</button>
+          <button id="refreshDroneStatusBtn" type="button">Refresh Drone Status</button>
+        </div>
+        <button id="connectDronesBtn" type="button" style="width:100%; margin-top:8px;">Connect Drones</button>
+        <div id="backendMessage" class="hint runtime-message">
+          Local runtime backend health check only. MAVLink, UDP companion, trigger send are not implemented here.
+        </div>
+        <div id="vehicleConnectionList" class="vehicle-connection-list"></div>
       </div>
 
       <div class="section">
