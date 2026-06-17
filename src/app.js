@@ -26,6 +26,9 @@ const runtimeState = {
   dronesConnecting: false,
   backendCheckInFlight: false,
   healthMonitorId: null,
+  dronePollingTimer: null,
+  droneRefreshInFlight: false,
+  consecutiveDronePollingFailures: 0,
 };
 
 function getDefaultBackendUrl() {
@@ -150,7 +153,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 });
 document.getElementById('saveConnBtn').addEventListener('click', saveConnectionForm);
 document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
-document.getElementById('refreshDroneStatusBtn').addEventListener('click', refreshDroneStatus);
+document.getElementById('refreshDroneStatusBtn').addEventListener('click', () => refreshDroneConnections());
 document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
 document.getElementById('backendUrl').addEventListener('change', saveBackendUrl);
 document.getElementById('exportQgcBtn').addEventListener('click', exportSelectedQgcPlan);
@@ -629,6 +632,26 @@ function setRuntimeStatus(status, message = '') {
   renderRuntimeConnection();
 }
 
+function shouldPollDroneConnections() {
+  return runtimeState.status === 'BACKEND ONLINE' && getVehicles().length > 0;
+}
+
+function syncDronePollingTimer() {
+  if (shouldPollDroneConnections()) {
+    if (runtimeState.dronePollingTimer) return;
+
+    runtimeState.dronePollingTimer = window.setInterval(() => {
+      refreshDroneConnections({ silent: true });
+    }, 1000);
+    return;
+  }
+
+  if (runtimeState.dronePollingTimer) {
+    window.clearInterval(runtimeState.dronePollingTimer);
+    runtimeState.dronePollingTimer = null;
+  }
+}
+
 async function connectBackend() {
   await checkBackendHealth({ manual: true });
 }
@@ -717,9 +740,15 @@ function markVehiclesConnecting() {
       fc_connected: 'UNKNOWN',
       last_seen_ms: null,
       last_fc_heartbeat_ms: null,
+      trigger_state: 'UNKNOWN',
       last_trigger_seq: null,
       last_trigger_state: 'UNKNOWN',
       last_trigger_reason: null,
+      last_trigger_relationship_id: null,
+      last_trigger_completed_ms: null,
+      rc_trigger_channel: null,
+      rc_trigger_threshold: null,
+      rc_trigger_active: null,
       reason: 'ping_sent',
       message: 'Waiting for UDP PONG...',
     };
@@ -742,9 +771,15 @@ function applyDroneStatusResults(results) {
       fc_connected: result?.fc_connected || 'UNKNOWN',
       last_seen_ms: result?.last_seen_ms ?? null,
       last_fc_heartbeat_ms: result?.last_fc_heartbeat_ms ?? null,
+      trigger_state: result?.trigger_state || 'UNKNOWN',
       last_trigger_seq: result?.last_trigger_seq ?? null,
       last_trigger_state: result?.last_trigger_state || 'UNKNOWN',
       last_trigger_reason: result?.last_trigger_reason ?? null,
+      last_trigger_relationship_id: result?.last_trigger_relationship_id ?? null,
+      last_trigger_completed_ms: result?.last_trigger_completed_ms ?? null,
+      rc_trigger_channel: result?.rc_trigger_channel ?? null,
+      rc_trigger_threshold: result?.rc_trigger_threshold ?? null,
+      rc_trigger_active: result?.rc_trigger_active ?? null,
       reason: result?.reason || '',
       message: result?.message || '',
       seq: result?.seq,
@@ -768,11 +803,11 @@ function normalizeDroneStatusResponse(responseBody) {
   return {};
 }
 
-async function refreshDroneStatus() {
-  saveBackendUrl();
+async function refreshDroneStatus({ silent = false } = {}) {
+  if (!silent) saveBackendUrl();
   if (!runtimeState.backendUrl) return;
   if (runtimeState.status !== 'BACKEND ONLINE') {
-    setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
+    if (!silent) setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
     return;
   }
 
@@ -791,40 +826,50 @@ async function refreshDroneStatus() {
     applyDroneStatusResults(normalizeDroneStatusResponse(statusBody));
     renderRuntimeConnection();
   } catch (error) {
-    setRuntimeStatus('ERROR', `Drone status refresh failed: ${error.message}`);
+    if (!silent) setRuntimeStatus('ERROR', `Drone status refresh failed: ${error.message}`);
   }
 }
 
 async function connectDrones() {
+  await refreshDroneConnections();
+}
+
+async function refreshDroneConnections({ silent = false } = {}) {
+  if (runtimeState.droneRefreshInFlight) return;
+
   if (getVehicles().length === 0) {
     const warnings = ['No vehicles yet. Add a vehicle first.'];
-    showConnectionWarning(warnings);
-    alert(warnings[0]);
+    if (!silent) {
+      showConnectionWarning(warnings);
+      alert(warnings[0]);
+    }
     return;
   }
 
-  if (!saveConnectionForm()) return;
+  if (!silent && !saveConnectionForm()) return;
 
   const connectionWarnings = validateAllVehicleConnections();
   if (connectionWarnings.length > 0) {
-    showConnectionWarning(connectionWarnings);
-    alert('Connect Drones를 실행할 수 없습니다:\n- ' + connectionWarnings.join('\n- '));
+    if (!silent) {
+      showConnectionWarning(connectionWarnings);
+      alert('Connect Drones를 실행할 수 없습니다:\n- ' + connectionWarnings.join('\n- '));
+    }
     return;
   }
 
-  saveBackendUrl();
+  if (!silent) saveBackendUrl();
   if (!runtimeState.backendUrl) return;
   if (runtimeState.status !== 'BACKEND ONLINE') {
-    setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
+    if (!silent) setRuntimeStatus('ERROR', 'Backend is not online. Retry backend check first.');
     return;
   }
 
-  runtimeState.dronesConnecting = true;
-  markVehiclesConnecting();
-  setRuntimeStatus(
-    runtimeState.status === 'BACKEND ONLINE' ? 'BACKEND ONLINE' : 'CONNECTING',
-    'Checking drone companion UDP PONG responses...'
-  );
+  runtimeState.droneRefreshInFlight = true;
+  if (!silent) {
+    runtimeState.dronesConnecting = true;
+    markVehiclesConnecting();
+    setRuntimeStatus('BACKEND ONLINE', 'Checking drone companion UDP PONG responses...');
+  }
 
   try {
     const response = await fetch(`${runtimeState.backendUrl}/api/drones/connect`, {
@@ -845,40 +890,58 @@ async function connectDrones() {
 
     const results = normalizeDroneStatusResponse(connectionResult);
     applyDroneStatusResults(results);
+    runtimeState.consecutiveDronePollingFailures = 0;
     const resultValues = Object.values(results);
     const connectedCount = resultValues.filter(
       (vehicle) => vehicle.companion_state === 'CONNECTED'
     ).length;
-    setRuntimeStatus(
-      'BACKEND ONLINE',
-      `Drone companion check complete: ${connectedCount}/${resultValues.length} companion connected.`
-    );
-    await refreshDroneStatus();
-  } catch (error) {
-    for (const vehicle of getVehicles()) {
-      runtimeState.vehicleConnections[vehicle.vehicle_id] = {
-        vehicle_id: vehicle.vehicle_id,
-        name: vehicle.name,
-        role: vehicle.role,
-        ip: vehicle.ip,
-        udp_port: vehicle.udp_port,
-        firmware_profile: vehicle.firmware_profile,
-        connection_state: 'ERROR',
-        companion_state: 'ERROR',
-        fc_connected: 'UNKNOWN',
-        last_seen_ms: null,
-        last_fc_heartbeat_ms: null,
-        last_trigger_seq: null,
-        last_trigger_state: 'UNKNOWN',
-        last_trigger_reason: null,
-        reason: 'request_failed',
-        message: error.message,
-      };
+    if (!silent) {
+      setRuntimeStatus(
+        'BACKEND ONLINE',
+        `Drone companion check complete: ${connectedCount}/${resultValues.length} companion connected.`
+      );
+      await refreshDroneStatus({ silent: true });
+    } else {
+      renderRuntimeConnection();
     }
-    setRuntimeStatus('ERROR', `Drone companion check failed: ${error.message}`);
+  } catch (error) {
+    runtimeState.consecutiveDronePollingFailures += 1;
+    if (!silent || runtimeState.consecutiveDronePollingFailures >= 3) {
+      for (const vehicle of getVehicles()) {
+        runtimeState.vehicleConnections[vehicle.vehicle_id] = {
+          vehicle_id: vehicle.vehicle_id,
+          name: vehicle.name,
+          role: vehicle.role,
+          ip: vehicle.ip,
+          udp_port: vehicle.udp_port,
+          firmware_profile: vehicle.firmware_profile,
+          connection_state: 'ERROR',
+          companion_state: 'ERROR',
+          fc_connected: 'UNKNOWN',
+          last_seen_ms: null,
+          last_fc_heartbeat_ms: null,
+          trigger_state: 'UNKNOWN',
+          last_trigger_seq: null,
+          last_trigger_state: 'UNKNOWN',
+          last_trigger_reason: null,
+          last_trigger_relationship_id: null,
+          last_trigger_completed_ms: null,
+          rc_trigger_channel: null,
+          rc_trigger_threshold: null,
+          rc_trigger_active: null,
+          reason: 'request_failed',
+          message: error.message,
+        };
+      }
+      renderRuntimeConnection();
+    }
+    if (!silent) setRuntimeStatus('ERROR', `Drone companion check failed: ${error.message}`);
   } finally {
-    runtimeState.dronesConnecting = false;
-    renderRuntimeConnection();
+    runtimeState.droneRefreshInFlight = false;
+    if (!silent) {
+      runtimeState.dronesConnecting = false;
+      renderRuntimeConnection();
+    }
   }
 }
 
@@ -895,9 +958,15 @@ function getVehicleConnection(vehicle) {
     fc_connected: 'UNKNOWN',
     last_seen_ms: null,
     last_fc_heartbeat_ms: null,
+    trigger_state: 'UNKNOWN',
     last_trigger_seq: null,
     last_trigger_state: 'UNKNOWN',
     last_trigger_reason: null,
+    last_trigger_relationship_id: null,
+    last_trigger_completed_ms: null,
+    rc_trigger_channel: null,
+    rc_trigger_threshold: null,
+    rc_trigger_active: null,
     reason: '',
     message: '',
   };
@@ -931,6 +1000,7 @@ function renderRuntimeConnection() {
   refreshDroneStatusButton.disabled = runtimeState.status !== 'BACKEND ONLINE';
   connectDronesButton.disabled =
     runtimeState.status !== 'BACKEND ONLINE' || runtimeState.dronesConnecting;
+  syncDronePollingTimer();
 
   vehicleConnectionList.innerHTML = '';
   if (getVehicles().length === 0) {
@@ -957,6 +1027,25 @@ function renderRuntimeConnection() {
       CONNECTED: 'is-connected',
       DISCONNECTED: 'is-offline',
     }[fcState] || 'is-unknown';
+    const detailLines = [
+      ['Last seen', formatRuntimeTime(connection.last_seen_ms)],
+      ['FC heartbeat', formatRuntimeTime(connection.last_fc_heartbeat_ms)],
+    ];
+
+    if (vehicle.role === 'carrier') {
+      detailLines.push(['RC trigger condition', formatRcTriggerCondition(connection)]);
+    } else {
+      detailLines.push(
+        ['Trigger state', connection.trigger_state || 'UNKNOWN'],
+        ['Last trigger', connection.last_trigger_state || 'UNKNOWN'],
+        ['Reason', connection.last_trigger_reason || connection.reason || '-'],
+        ['Trigger seq', formatRuntimeValue(connection.last_trigger_seq)]
+      );
+    }
+
+    const detailHtml = detailLines
+      .map(([label, value]) => `<span>${escapeHtml(label)}: ${escapeHtml(value)}</span>`)
+      .join('');
     const row = document.createElement('div');
     row.className = 'vehicle-connection-row';
     row.innerHTML = `
@@ -964,11 +1053,7 @@ function renderRuntimeConnection() {
         <div>${escapeHtml(vehicle.name)} (${escapeHtml(vehicle.vehicle_id)})</div>
         <div class="vehicle-connection-meta">${escapeHtml(vehicle.role)} · ${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</div>
         <div class="vehicle-connection-details">
-          <span>Last seen: ${escapeHtml(formatRuntimeTime(connection.last_seen_ms))}</span>
-          <span>FC heartbeat: ${escapeHtml(formatRuntimeTime(connection.last_fc_heartbeat_ms))}</span>
-          <span>Trigger seq: ${escapeHtml(formatRuntimeValue(connection.last_trigger_seq))}</span>
-          <span>Trigger state: ${escapeHtml(connection.last_trigger_state || 'UNKNOWN')}</span>
-          <span>Reason: ${escapeHtml(connection.last_trigger_reason || connection.reason || '-')}</span>
+          ${detailHtml}
         </div>
       </div>
       <div class="vehicle-connection-badges">
@@ -1794,6 +1879,22 @@ function formatRuntimeTime(value) {
 
 function formatRuntimeValue(value) {
   return value === null || value === undefined || value === '' ? '-' : value;
+}
+
+function formatRcTriggerCondition(connection) {
+  const state = connection.rc_trigger_active === true
+    ? 'ACTIVE'
+    : connection.rc_trigger_active === false
+      ? 'IDLE'
+      : 'UNKNOWN';
+  const channel = connection.rc_trigger_channel;
+  const threshold = connection.rc_trigger_threshold;
+
+  if (channel !== null && channel !== undefined && threshold !== null && threshold !== undefined) {
+    return `${state} (CH${channel} >= ${threshold})`;
+  }
+
+  return state;
 }
 
 function escapeHtml(value) {
