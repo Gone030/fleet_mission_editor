@@ -349,6 +349,13 @@
       height: 28px;
       box-shadow: 0 0 0 3px rgba(255, 255, 255, .8), 0 0 16px rgba(96, 165, 250, .95);
     }
+    .live-drone-marker--stale,
+    .live-drone-marker--unknown {
+      background: #64748b;
+      opacity: .72;
+      filter: grayscale(.45);
+      box-shadow: 0 0 0 2px rgba(15, 23, 42, .55), 0 0 10px rgba(148, 163, 184, .65);
+    }
     .live-drone-marker-heading {
       position: absolute;
       left: 50%;
@@ -359,6 +366,16 @@
       border-right: 5px solid transparent;
       border-bottom: 8px solid #ffffff;
       transform: translateX(-50%);
+    }
+    .live-drone-marker-state {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      color: #ffffff;
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 1;
+      transform: translate(-50%, -50%) rotate(var(--marker-label-rotate, 0deg));
     }
     .hidden { display: none; }
     .spacer { flex: 1; }
