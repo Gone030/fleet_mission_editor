@@ -331,6 +331,35 @@
     }
     .leaflet-container { font-family: inherit; }
     .leaflet-popup-content { color: #111827; font-size: 12px; }
+    .live-drone-marker-icon {
+      background: transparent;
+      border: 0;
+    }
+    .live-drone-marker {
+      width: 24px;
+      height: 24px;
+      border: 2px solid #ffffff;
+      border-radius: 50% 50% 50% 0;
+      background: var(--vehicle-color, var(--accent));
+      box-shadow: 0 0 0 2px rgba(15, 23, 42, .55), 0 0 12px rgba(96, 165, 250, .75);
+      position: relative;
+    }
+    .live-drone-marker--selected {
+      width: 28px;
+      height: 28px;
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, .8), 0 0 16px rgba(96, 165, 250, .95);
+    }
+    .live-drone-marker-heading {
+      position: absolute;
+      left: 50%;
+      top: -7px;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-bottom: 8px solid #ffffff;
+      transform: translateX(-50%);
+    }
     .hidden { display: none; }
     .spacer { flex: 1; }
 

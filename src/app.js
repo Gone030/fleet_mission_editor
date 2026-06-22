@@ -125,6 +125,7 @@ const VEHICLE_COLORS = [
 
 let markers = {};
 let polylines = {};
+const liveDroneMarkers = new Map();
 
 
 const map = L.map('map').setView([36.3504, 127.3845], 14);
@@ -169,6 +170,7 @@ function renderAll() {
   renderConnectionForm();
   renderWaypointRows();
   renderMapItems();
+  updateLiveDroneMarkers();
   renderMissionSummary();
   renderRelationshipEditor();
   renderRelationshipList();
@@ -740,6 +742,7 @@ function markVehiclesConnecting() {
       fc_connected: 'UNKNOWN',
       last_seen_ms: null,
       last_fc_heartbeat_ms: null,
+      position: null,
       trigger_state: 'UNKNOWN',
       last_trigger_seq: null,
       last_trigger_state: 'UNKNOWN',
@@ -757,20 +760,23 @@ function markVehiclesConnecting() {
 
 function applyDroneStatusResults(results) {
   const nextConnections = {};
-  for (const vehicle of getVehicles()) {
-    const result = results[vehicle.vehicle_id];
-    nextConnections[vehicle.vehicle_id] = {
-      vehicle_id: vehicle.vehicle_id,
-      name: vehicle.name,
-      role: vehicle.role,
-      ip: vehicle.ip,
-      udp_port: vehicle.udp_port,
-      firmware_profile: vehicle.firmware_profile,
+  const vehiclesById = new Map(getVehicles().map((vehicle) => [vehicle.vehicle_id, vehicle]));
+
+  for (const [vehicleId, result] of Object.entries(results || {})) {
+    const vehicle = vehiclesById.get(vehicleId);
+    nextConnections[vehicleId] = {
+      vehicle_id: vehicleId,
+      name: vehicle?.name || result?.name || vehicleId,
+      role: vehicle?.role || result?.role || 'unknown',
+      ip: vehicle?.ip || result?.ip || '',
+      udp_port: vehicle?.udp_port || result?.udp_port || '',
+      firmware_profile: vehicle?.firmware_profile || result?.firmware_profile || '',
       connection_state: result?.connection_state || result?.status || 'UNKNOWN',
       companion_state: result?.companion_state || result?.status || 'UNKNOWN',
       fc_connected: result?.fc_connected || 'UNKNOWN',
       last_seen_ms: result?.last_seen_ms ?? null,
       last_fc_heartbeat_ms: result?.last_fc_heartbeat_ms ?? null,
+      position: result?.position ?? null,
       trigger_state: result?.trigger_state || 'UNKNOWN',
       last_trigger_seq: result?.last_trigger_seq ?? null,
       last_trigger_state: result?.last_trigger_state || 'UNKNOWN',
@@ -786,7 +792,38 @@ function applyDroneStatusResults(results) {
       latency_ms: result?.latency_ms,
     };
   }
+
+  for (const vehicle of getVehicles()) {
+    if (nextConnections[vehicle.vehicle_id]) continue;
+    nextConnections[vehicle.vehicle_id] = {
+      vehicle_id: vehicle.vehicle_id,
+      name: vehicle.name,
+      role: vehicle.role,
+      ip: vehicle.ip,
+      udp_port: vehicle.udp_port,
+      firmware_profile: vehicle.firmware_profile,
+      connection_state: 'UNKNOWN',
+      companion_state: 'UNKNOWN',
+      fc_connected: 'UNKNOWN',
+      last_seen_ms: null,
+      last_fc_heartbeat_ms: null,
+      position: null,
+      trigger_state: 'UNKNOWN',
+      last_trigger_seq: null,
+      last_trigger_state: 'UNKNOWN',
+      last_trigger_reason: null,
+      last_trigger_relationship_id: null,
+      last_trigger_completed_ms: null,
+      rc_trigger_channel: null,
+      rc_trigger_threshold: null,
+      rc_trigger_active: null,
+      reason: '',
+      message: '',
+    };
+  }
+
   runtimeState.vehicleConnections = nextConnections;
+  updateLiveDroneMarkers(nextConnections);
 }
 
 function normalizeDroneStatusResponse(responseBody) {
@@ -917,10 +954,11 @@ async function refreshDroneConnections({ silent = false } = {}) {
           firmware_profile: vehicle.firmware_profile,
           connection_state: 'ERROR',
           companion_state: 'ERROR',
-          fc_connected: 'UNKNOWN',
-          last_seen_ms: null,
-          last_fc_heartbeat_ms: null,
-          trigger_state: 'UNKNOWN',
+        fc_connected: 'UNKNOWN',
+        last_seen_ms: null,
+        last_fc_heartbeat_ms: null,
+        position: null,
+        trigger_state: 'UNKNOWN',
           last_trigger_seq: null,
           last_trigger_state: 'UNKNOWN',
           last_trigger_reason: null,
@@ -958,6 +996,7 @@ function getVehicleConnection(vehicle) {
     fc_connected: 'UNKNOWN',
     last_seen_ms: null,
     last_fc_heartbeat_ms: null,
+    position: null,
     trigger_state: 'UNKNOWN',
     last_trigger_seq: null,
     last_trigger_state: 'UNKNOWN',
@@ -1031,6 +1070,16 @@ function renderRuntimeConnection() {
       ['Last seen', formatRuntimeTime(connection.last_seen_ms)],
       ['FC heartbeat', formatRuntimeTime(connection.last_fc_heartbeat_ms)],
     ];
+    const livePosition = normalizeLivePosition(connection.position);
+
+    if (livePosition) {
+      detailLines.push(
+        ['GPS', `FIX ${formatRuntimeValue(livePosition.fix_type)} / Sat ${formatRuntimeValue(livePosition.satellites_visible)}`],
+        ['Position', `${formatNumber(livePosition.lat, 7)}, ${formatNumber(livePosition.lon, 7)}`],
+        ['Rel Alt', livePosition.relative_alt_m === null ? '-' : `${formatNumber(livePosition.relative_alt_m, 1)} m`],
+        ['Heading', livePosition.heading_deg === null ? '-' : `${formatNumber(livePosition.heading_deg, 1)} deg`]
+      );
+    }
 
     if (vehicle.role === 'carrier') {
       detailLines.push(['RC trigger condition', formatRcTriggerCondition(connection)]);
@@ -1281,6 +1330,168 @@ function renderMapItems() {
       }).addTo(map);
     }
   }
+}
+
+function normalizeLivePosition(position) {
+  if (!position) return null;
+
+  const lat = Number(position.lat);
+  const lon = Number(position.lon);
+  const fixType = position.fix_type === null || position.fix_type === undefined
+    ? null
+    : Number(position.fix_type);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat === 0 || lon === 0) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  if (fixType !== null && (!Number.isFinite(fixType) || fixType < 3)) return null;
+
+  return {
+    lat,
+    lon,
+    alt_m: toOptionalNumber(position.alt_m),
+    relative_alt_m: toOptionalNumber(position.relative_alt_m),
+    heading_deg: toOptionalNumber(position.heading_deg),
+    fix_type: fixType,
+    satellites_visible: toOptionalNumber(position.satellites_visible),
+    eph: toOptionalNumber(position.eph),
+    epv: toOptionalNumber(position.epv),
+    timestamp_ms: toOptionalNumber(position.timestamp_ms),
+  };
+}
+
+function toOptionalNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function updateLiveDroneMarkers(runtimeStatuses = runtimeState.vehicleConnections) {
+  debugLiveMarker('[live] runtimeStatuses', runtimeStatuses);
+  const activeVehicleIds = new Set(Object.keys(runtimeStatuses));
+  const vehiclesById = new Map(getVehicles().map((vehicle) => [vehicle.vehicle_id, vehicle]));
+
+  for (const [vehicleId, status] of Object.entries(runtimeStatuses)) {
+    debugLiveMarker('[live] vehicle', vehicleId, status);
+    debugLiveMarker('[live] raw position', status?.position);
+    const vehicle = vehiclesById.get(vehicleId) || {
+      vehicle_id: vehicleId,
+      name: status?.name || vehicleId,
+      role: status?.role || 'unknown',
+      color: '#60a5fa',
+    };
+    const position = normalizeLivePosition(status?.position);
+    debugLiveMarker('[live] normalized', position);
+    const existingMarker = liveDroneMarkers.get(vehicleId);
+
+    if (!position) {
+      if (existingMarker) {
+        map.removeLayer(existingMarker);
+        liveDroneMarkers.delete(vehicleId);
+      }
+      continue;
+    }
+
+    const latLng = [position.lat, position.lon];
+    debugLiveMarker('[live] create/update marker', vehicleId, latLng);
+
+    if (existingMarker) {
+      existingMarker.setLatLng(latLng);
+      existingMarker.bindPopup(buildLiveDronePopup(vehicle, position));
+    } else {
+      const marker = L.marker(latLng, {
+        zIndexOffset: 1000,
+      }).addTo(map);
+      marker.bindPopup(buildLiveDronePopup(vehicle, position));
+      liveDroneMarkers.set(vehicleId, marker);
+    }
+  }
+
+  for (const [vehicleId, marker] of liveDroneMarkers.entries()) {
+    if (!activeVehicleIds.has(vehicleId)) {
+      map.removeLayer(marker);
+      liveDroneMarkers.delete(vehicleId);
+    }
+  }
+  debugLiveMarker('[live] marker count', liveDroneMarkers.size);
+}
+
+function debugLiveMarker(...args) {
+  if (window.__liveMarkerDebugEnabled === true) {
+    console.log(...args);
+  }
+}
+
+function debugLiveMarkerSnapshot() {
+  console.log('[live] debug enabled');
+  console.log('[live] backend status', runtimeState.status);
+  console.log('[live] vehicles', getVehicles());
+  console.log('[live] runtimeState.vehicleConnections', runtimeState.vehicleConnections);
+  updateLiveDroneMarkers(runtimeState.vehicleConnections);
+  console.log('[live] marker count', liveDroneMarkers.size);
+  return {
+    backendStatus: runtimeState.status,
+    vehicleCount: getVehicles().length,
+    connectionKeys: Object.keys(runtimeState.vehicleConnections),
+    markerCount: liveDroneMarkers.size,
+  };
+}
+
+Object.defineProperty(window, 'liveMarkerDebug', {
+  configurable: true,
+  get() {
+    return window.__liveMarkerDebugEnabled === true;
+  },
+  set(value) {
+    window.__liveMarkerDebugEnabled = value === true;
+    if (window.__liveMarkerDebugEnabled) {
+      debugLiveMarkerSnapshot();
+    }
+  },
+});
+
+window.debugLiveMarkers = debugLiveMarkerSnapshot;
+
+function buildLiveDroneIcon(vehicle, position) {
+  const isSelected = vehicle.vehicle_id === state.selectedVehicleId;
+  const color = vehicle.color || '#60a5fa';
+  const heading = position.heading_deg ?? 0;
+  const className = `live-drone-marker${isSelected ? ' live-drone-marker--selected' : ''}`;
+  const html = `
+    <div class="${className}" style="--vehicle-color:${escapeHtml(color)}; transform: rotate(${escapeHtml(heading)}deg);">
+      <div class="live-drone-marker-heading"></div>
+    </div>
+  `;
+
+  return L.divIcon({
+    className: 'live-drone-marker-icon',
+    html,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -14],
+  });
+}
+
+function buildLiveDronePopup(vehicle, position) {
+  const altitude = position.relative_alt_m !== null
+    ? `${formatNumber(position.relative_alt_m, 1)} m rel`
+    : position.alt_m !== null
+      ? `${formatNumber(position.alt_m, 1)} m`
+      : '-';
+
+  return `
+    <b>${escapeHtml(vehicle.name || vehicle.vehicle_id)}</b><br>
+    Lat/Lon: ${escapeHtml(formatNumber(position.lat, 7))}, ${escapeHtml(formatNumber(position.lon, 7))}<br>
+    GPS fix: ${escapeHtml(formatRuntimeValue(position.fix_type))}<br>
+    Sat: ${escapeHtml(formatRuntimeValue(position.satellites_visible))}<br>
+    Alt: ${escapeHtml(altitude)}<br>
+    Heading: ${escapeHtml(position.heading_deg === null ? '-' : `${formatNumber(position.heading_deg, 1)} deg`)}
+  `;
+}
+
+function formatNumber(value, digits) {
+  if (!Number.isFinite(Number(value))) return '-';
+  return Number(value).toFixed(digits);
 }
 
 function renderMissionSummary() {

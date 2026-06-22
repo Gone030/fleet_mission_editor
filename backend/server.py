@@ -74,6 +74,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "fc_connected": normalize_fc_state(health.get("fc_connected")),
         "last_seen_ms": timestamp_ms if state == "CONNECTED" else None,
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
+        "position": health.get("position"),
         "trigger_state": health.get("trigger_state") or "UNKNOWN",
         "last_trigger_seq": health.get("last_trigger_seq"),
         "last_trigger_state": health.get("last_trigger_state") or "UNKNOWN",
