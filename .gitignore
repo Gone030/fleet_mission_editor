@@ -10,3 +10,4 @@ __pychech__/
 *$py.class
 
 *.log
+.DS_store
