@@ -379,6 +379,14 @@
     }
     .hidden { display: none; }
     .spacer { flex: 1; }
+    .save-status {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .save-status.is-saving { color: var(--warn); }
+    .save-status.is-saved { color: var(--ok); }
+    .save-status.is-error { color: var(--danger); }
 
     .child-card {
     margin-left: calc(var(--tree-depth, 1) * 18px);

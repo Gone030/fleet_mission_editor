@@ -15,6 +15,7 @@
       <span class="subtitle">multi-vehicle mission editor</span>
     </div>
     <div class="toolbar">
+      <span id="vehicleSaveStatus" class="save-status">Vehicles not loaded</span>
       <button id="exportPackageBtn">Mission Package JSON 저장</button>
       <label class="file-label" for="importPackageInput">Mission Package 불러오기</label>
       <input id="importPackageInput" class="hidden" type="file" accept=".json,application/json" />
@@ -36,7 +37,13 @@
             <div><label for="vehicleName">Name</label><input id="vehicleName" required /></div>
           </div>
           <div class="grid2">
-            <div><label for="vehicleRole">Role</label><input id="vehicleRole" required /></div>
+            <div>
+              <label for="vehicleRole">Role</label>
+              <select id="vehicleRole" required>
+                <option value="child">Child</option>
+                <option value="carrier">Carrier</option>
+              </select>
+            </div>
             <div><label for="vehicleSysid">SYSID</label><input id="vehicleSysid" type="number" min="1" max="255" required /></div>
           </div>
           <div class="grid2">
@@ -75,7 +82,13 @@
           <input id="connName" />
         </div>
         <div class="grid2">
-          <div><label for="connRole">Role</label><input id="connRole" /></div>
+          <div>
+            <label for="connRole">Role</label>
+            <select id="connRole">
+              <option value="child">Child</option>
+              <option value="carrier">Carrier</option>
+            </select>
+          </div>
           <div>
             <label for="connFirmwareProfile">Firmware Profile</label>
             <select id="connFirmwareProfile">
@@ -94,6 +107,25 @@
         </div>
         <div id="connectionWarning" class="form-warning hidden"></div>
         <button id="saveConnBtn" style="width:100%; margin-top:10px;">연결 설정 저장</button>
+      </div>
+
+      <div class="section">
+        <h2>Emergency Action</h2>
+        <div class="hint" style="margin-bottom: 10px;">
+          선택한 vehicle의 companion으로 수동 emergency 명령을 보냅니다. 자동 실행은 하지 않습니다.
+        </div>
+        <div>
+          <label for="emergencyActionSelect">Action</label>
+          <select id="emergencyActionSelect">
+            <option value="LAND">Land</option>
+            <option value="DISARM">Disarm</option>
+            <option value="FORCE_DISARM">Force Disarm</option>
+          </select>
+        </div>
+        <button id="executeEmergencyBtn" class="danger" type="button" style="width:100%; margin-top:10px;">Execute</button>
+        <div id="emergencyResult" class="hint runtime-message">
+          Select a vehicle and connect backend before executing an emergency action.
+        </div>
       </div>
 
       <div class="section">
