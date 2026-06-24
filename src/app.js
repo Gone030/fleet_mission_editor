@@ -29,6 +29,11 @@ const runtimeState = {
   dronePollingTimer: null,
   droneRefreshInFlight: false,
   consecutiveDronePollingFailures: 0,
+  emergencyInFlight: false,
+  emergencyResult: null,
+  vehicleSaveStatus: 'Vehicles not loaded',
+  vehicleSaveStatusKind: '',
+  vehicleSaveInFlight: false,
 };
 
 function getDefaultBackendUrl() {
@@ -93,6 +98,7 @@ function toggleVehicleCollapsed(vehicleId, event) {
 
   vehicle.collapsed = !vehicle.collapsed;
   renderAll();
+  saveVehicleConfigs({ silent: true });
 }
 
 const COMMAND = {
@@ -112,6 +118,31 @@ const RELATIONSHIP_ACTION_TYPES = [
 const FIRMWARE_PROFILES = [
   'standard_px4',
   'px4_nav_ready_gate',
+];
+
+const VEHICLE_ROLES = [
+  'carrier',
+  'child',
+];
+
+const EMERGENCY_ACTIONS = [
+  'LAND',
+  'DISARM',
+  'FORCE_DISARM',
+];
+
+const VEHICLE_CONFIG_FIELDS = [
+  'vehicle_id',
+  'name',
+  'role',
+  'sysid',
+  'ip',
+  'udp_port',
+  'parent_vehicle_id',
+  'sort_order',
+  'color',
+  'collapsed',
+  'firmware_profile',
 ];
 
 const VEHICLE_COLORS = [
@@ -153,6 +184,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   }
 });
 document.getElementById('saveConnBtn').addEventListener('click', saveConnectionForm);
+document.getElementById('executeEmergencyBtn').addEventListener('click', executeEmergencyAction);
 document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
 document.getElementById('refreshDroneStatusBtn').addEventListener('click', () => refreshDroneConnections());
 document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
@@ -174,10 +206,115 @@ function renderAll() {
   renderMapItems();
   updateLiveDroneMarkers();
   renderMissionSummary();
+  renderEmergencyControls();
   renderRelationshipEditor();
   renderRelationshipList();
   renderSanityCheck();
   renderRuntimeConnection();
+}
+
+function setVehicleSaveStatus(text, kind = '') {
+  runtimeState.vehicleSaveStatus = text;
+  runtimeState.vehicleSaveStatusKind = kind;
+  const el = document.getElementById('vehicleSaveStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = `save-status${kind ? ` is-${kind}` : ''}`;
+}
+
+function stripRuntimeFieldsFromVehicle(vehicle) {
+  const clean = {};
+  for (const field of VEHICLE_CONFIG_FIELDS) {
+    if (field in vehicle) clean[field] = vehicle[field];
+  }
+  clean.role = normalizeVehicleRole(clean.role);
+  return clean;
+}
+
+function normalizeVehicleRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  return VEHICLE_ROLES.includes(normalized) ? normalized : 'child';
+}
+
+function formatVehicleRole(role) {
+  const normalized = normalizeVehicleRole(role);
+  return normalized === 'carrier' ? 'Carrier' : 'Child';
+}
+
+function ensureMissionsForVehicles() {
+  const vehicleIds = new Set(getVehicles().map((vehicle) => vehicle.vehicle_id));
+  state.missions = state.missions.filter((mission) => vehicleIds.has(mission.vehicle_id));
+
+  for (const vehicle of getVehicles()) {
+    getMissionByVehicleId(vehicle.vehicle_id);
+  }
+}
+
+function applyLoadedVehicles(vehicles) {
+  state.vehicles = vehicles.map(stripRuntimeFieldsFromVehicle);
+  state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
+  ensureMissionsForVehicles();
+  runtimeState.emergencyResult = null;
+}
+
+async function loadVehicleConfigs() {
+  setVehicleSaveStatus('Loading vehicles...', 'saving');
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/vehicles`, {
+      method: 'GET',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    if (!data || data.ok !== true || !Array.isArray(data.vehicles)) {
+      throw new Error('Invalid vehicles response');
+    }
+
+    applyLoadedVehicles(data.vehicles);
+    setVehicleSaveStatus('Vehicles loaded', 'saved');
+    renderAll();
+  } catch (error) {
+    setVehicleSaveStatus(`Vehicle load failed: ${error.message}`, 'error');
+  }
+}
+
+async function saveVehicleConfigs({ silent = false } = {}) {
+  if (runtimeState.vehicleSaveInFlight) return false;
+  runtimeState.vehicleSaveInFlight = true;
+  setVehicleSaveStatus('Saving vehicles...', 'saving');
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/vehicles`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        vehicles: getVehicles().map(stripRuntimeFieldsFromVehicle),
+      }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true || !Array.isArray(data.vehicles)) {
+      const detail = data?.detail && typeof data.detail === 'object' ? data.detail : data;
+      throw new Error(detail?.reason || detail?.message || `HTTP ${response.status}`);
+    }
+
+    state.vehicles = data.vehicles.map(stripRuntimeFieldsFromVehicle);
+    if (!state.vehicles.some((vehicle) => vehicle.vehicle_id === state.selectedVehicleId)) {
+      state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
+    }
+    ensureMissionsForVehicles();
+    setVehicleSaveStatus('Vehicles saved', 'saved');
+    renderAll();
+    return true;
+  } catch (error) {
+    setVehicleSaveStatus(`Vehicle save failed: ${error.message}`, 'error');
+    if (!silent) console.warn('Vehicle config save failed:', error);
+    return false;
+  } finally {
+    runtimeState.vehicleSaveInFlight = false;
+  }
 }
 
 function getVehicleById(vehicleId) {
@@ -270,7 +407,7 @@ function showVehicleForm() {
   populateVehicleParentOptions();
   document.getElementById('vehicleId').value = vehicleId;
   document.getElementById('vehicleName').value = `Vehicle-${getVehicles().length + 1}`;
-  document.getElementById('vehicleRole').value = 'custom';
+  document.getElementById('vehicleRole').value = 'child';
   document.getElementById('vehicleSysid').value = getNextSysid();
   document.getElementById('vehicleIp').value = '127.0.0.1';
   document.getElementById('vehiclePort').value = getNextUdpPort();
@@ -297,7 +434,7 @@ function addVehicleFromForm(event) {
 
   const vehicleId = document.getElementById('vehicleId').value.trim();
   const name = document.getElementById('vehicleName').value.trim();
-  const role = document.getElementById('vehicleRole').value.trim();
+  const role = normalizeVehicleRole(document.getElementById('vehicleRole').value);
   const sysid = Number(document.getElementById('vehicleSysid').value);
   const ip = document.getElementById('vehicleIp').value.trim();
   const udpPort = Number(document.getElementById('vehiclePort').value);
@@ -368,8 +505,10 @@ function addVehicleFromForm(event) {
   }
 
   state.selectedVehicleId = vehicleId;
+  runtimeState.emergencyResult = null;
   hideVehicleForm();
   renderAll();
+  saveVehicleConfigs({ silent: true });
 }
 
 function getVehicleRelationships(vehicleId) {
@@ -418,8 +557,10 @@ function deleteSelectedVehicle() {
     (mission) => mission.vehicle_id !== vehicle.vehicle_id
   );
   state.selectedVehicleId = state.vehicles[0].vehicle_id;
+  runtimeState.emergencyResult = null;
   hideVehicleForm();
   renderAll();
+  saveVehicleConfigs({ silent: true });
 }
 
 function renderDroneList() {
@@ -451,6 +592,9 @@ function renderVehicleTree(list, vehicle, depth) {
   card.style.setProperty('--tree-depth', depth);
 
   card.onclick = () => {
+    if (state.selectedVehicleId !== vehicle.vehicle_id) {
+      runtimeState.emergencyResult = null;
+    }
     state.selectedVehicleId = vehicle.vehicle_id;
     renderAll();
   };
@@ -471,7 +615,7 @@ function renderVehicleTree(list, vehicle, depth) {
       </div>
       <div class="badge ${mission.waypoints.length ? 'ok' : 'warn'}">${escapeHtml(uploadState)}</div>
     </div>
-    <div class="kv"><span>Role</span><span>${escapeHtml(vehicle.role)}</span></div>
+    <div class="kv"><span>Role</span><span>${escapeHtml(formatVehicleRole(vehicle.role))}</span></div>
     <div class="kv"><span>SYSID</span><span>${escapeHtml(vehicle.sysid)}</span></div>
     <div class="kv"><span>UDP</span><span>${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</span></div>
     <div class="kv"><span>Profile</span><span>${escapeHtml(vehicle.firmware_profile)}</span></div>
@@ -515,7 +659,7 @@ function renderConnectionForm() {
   document.getElementById('connIp').value = vehicle.ip;
   document.getElementById('connPort').value = vehicle.udp_port;
   document.getElementById('connSysid').value = vehicle.sysid;
-  document.getElementById('connRole').value = vehicle.role;
+  document.getElementById('connRole').value = normalizeVehicleRole(vehicle.role);
   document.getElementById('connFirmwareProfile').value = vehicle.firmware_profile;
   for (const id of ids) {
     document.getElementById(id).disabled = false;
@@ -527,7 +671,7 @@ function renderConnectionForm() {
 function getConnectionFormValues() {
   return {
     name: document.getElementById('connName').value.trim(),
-    role: document.getElementById('connRole').value.trim(),
+    role: normalizeVehicleRole(document.getElementById('connRole').value),
     firmware_profile: document.getElementById('connFirmwareProfile').value,
     sysid: Number(document.getElementById('connSysid').value),
     ip: document.getElementById('connIp').value.trim(),
@@ -539,7 +683,7 @@ function validateVehicleConnectionValues(values, label = 'Selected vehicle') {
   const warnings = [];
 
   if (!values.name) warnings.push(`${label}: name을 입력하세요.`);
-  if (!values.role) warnings.push(`${label}: role을 입력하세요.`);
+  if (!VEHICLE_ROLES.includes(values.role)) warnings.push(`${label}: role은 carrier 또는 child여야 합니다.`);
   if (!values.ip) warnings.push(`${label}: IP가 비어 있습니다.`);
   if (!Number.isInteger(values.udp_port) || values.udp_port < 1 || values.udp_port > 65535) {
     warnings.push(`${label}: UDP port는 1~65535 사이의 숫자여야 합니다.`);
@@ -558,7 +702,7 @@ function validateVehicleForRuntime(vehicle) {
   return validateVehicleConnectionValues(
     {
       name: String(vehicle.name || '').trim(),
-      role: String(vehicle.role || '').trim(),
+      role: normalizeVehicleRole(vehicle.role),
       firmware_profile: vehicle.firmware_profile,
       sysid: Number(vehicle.sysid),
       ip: String(vehicle.ip || '').trim(),
@@ -584,7 +728,7 @@ function validateAllVehicleConnections() {
   return getVehicles().flatMap(validateVehicleForRuntime);
 }
 
-function saveConnectionForm({ silent = false } = {}) {
+function saveConnectionForm({ silent = false, persist = true } = {}) {
   const vehicle = getSelectedVehicle();
   if (!vehicle) {
     const warnings = ['No vehicle selected. Add a vehicle first.'];
@@ -602,7 +746,7 @@ function saveConnectionForm({ silent = false } = {}) {
   }
 
   vehicle.name = values.name;
-  vehicle.role = values.role;
+  vehicle.role = normalizeVehicleRole(values.role);
   vehicle.firmware_profile = values.firmware_profile;
   vehicle.sysid = values.sysid;
   vehicle.ip = values.ip;
@@ -610,7 +754,168 @@ function saveConnectionForm({ silent = false } = {}) {
   clearConnectionWarning();
 
   renderAll();
+  if (persist) saveVehicleConfigs({ silent: true });
   return true;
+}
+
+function renderEmergencyControls() {
+  const vehicle = getSelectedVehicle();
+  const actionSelect = document.getElementById('emergencyActionSelect');
+  const executeButton = document.getElementById('executeEmergencyBtn');
+  const resultBox = document.getElementById('emergencyResult');
+
+  actionSelect.disabled = !vehicle || runtimeState.emergencyInFlight;
+  executeButton.disabled =
+    !vehicle ||
+    runtimeState.status !== 'BACKEND ONLINE' ||
+    runtimeState.emergencyInFlight;
+  executeButton.textContent = runtimeState.emergencyInFlight ? 'Executing...' : 'Execute';
+
+  if (!vehicle) {
+    resultBox.textContent = 'Select a vehicle before executing an emergency action.';
+    return;
+  }
+
+  if (runtimeState.emergencyResult) {
+    resultBox.textContent = formatEmergencyResult(runtimeState.emergencyResult);
+    return;
+  }
+
+  resultBox.textContent = runtimeState.status === 'BACKEND ONLINE'
+    ? `Ready for ${vehicle.name} (${vehicle.vehicle_id}).`
+    : 'Backend must be online before executing an emergency action.';
+}
+
+function formatEmergencyResult(result) {
+  if (!result) return '';
+  if (result.ok) {
+    const ack = result.ack || {};
+    return `Emergency result: ${result.action} / ${ack.result || 'ACK'} / ${ack.reason || result.reason || '-'}`;
+  }
+
+  return `Emergency failed: ${result.action || '-'} / ${result.reason || result.message || 'unknown_error'}`;
+}
+
+function parseEmergencyError(responseBody, fallbackAction) {
+  const detail = responseBody?.detail && typeof responseBody.detail === 'object'
+    ? responseBody.detail
+    : responseBody;
+
+  return {
+    ok: false,
+    vehicle_id: detail?.vehicle_id || getSelectedVehicle()?.vehicle_id || '',
+    action: detail?.action || fallbackAction,
+    reason: detail?.reason || detail?.message || 'request_failed',
+    message: detail?.message || '',
+  };
+}
+
+async function executeEmergencyAction() {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) {
+    runtimeState.emergencyResult = {
+      ok: false,
+      action: document.getElementById('emergencyActionSelect').value,
+      reason: 'vehicle_not_selected',
+    };
+    renderEmergencyControls();
+    return;
+  }
+
+  const action = document.getElementById('emergencyActionSelect').value;
+  if (!EMERGENCY_ACTIONS.includes(action)) {
+    runtimeState.emergencyResult = {
+      ok: false,
+      vehicle_id: vehicle.vehicle_id,
+      action,
+      reason: 'unsupported_action',
+    };
+    renderEmergencyControls();
+    return;
+  }
+
+  if (!saveConnectionForm({ persist: false })) return;
+
+  saveBackendUrl();
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    runtimeState.emergencyResult = {
+      ok: false,
+      vehicle_id: vehicle.vehicle_id,
+      action,
+      reason: 'backend_not_online',
+    };
+    renderEmergencyControls();
+    return;
+  }
+
+  const saved = await saveVehicleConfigs({ silent: true });
+  if (!saved) {
+    runtimeState.emergencyResult = {
+      ok: false,
+      vehicle_id: vehicle.vehicle_id,
+      action,
+      reason: 'vehicle_config_save_failed',
+    };
+    renderEmergencyControls();
+    return;
+  }
+
+  runtimeState.emergencyInFlight = true;
+  runtimeState.emergencyResult = {
+    ok: false,
+    vehicle_id: vehicle.vehicle_id,
+    action,
+    reason: 'sending',
+  };
+  renderEmergencyControls();
+
+  try {
+    const response = await fetch(
+      `${runtimeState.backendUrl}/api/drones/${encodeURIComponent(vehicle.vehicle_id)}/emergency`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ action }),
+      }
+    );
+    const responseBody = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      runtimeState.emergencyResult = parseEmergencyError(responseBody, action);
+      return;
+    }
+
+    runtimeState.emergencyResult = responseBody;
+    applyEmergencyResultToConnection(vehicle.vehicle_id, responseBody);
+  } catch (error) {
+    runtimeState.emergencyResult = {
+      ok: false,
+      vehicle_id: vehicle.vehicle_id,
+      action,
+      reason: 'request_failed',
+      message: error.message,
+    };
+  } finally {
+    runtimeState.emergencyInFlight = false;
+    renderEmergencyControls();
+    renderRuntimeConnection();
+  }
+}
+
+function applyEmergencyResultToConnection(vehicleId, result) {
+  if (!result) return;
+  const ack = result.ack || {};
+  const current = runtimeState.vehicleConnections[vehicleId] || {};
+
+  runtimeState.vehicleConnections[vehicleId] = {
+    ...current,
+    last_emergency_action: result.action || ack.action || current.last_emergency_action || null,
+    last_emergency_result: ack.result || (result.ok ? 'ACK' : 'FAILED'),
+    last_emergency_reason: ack.reason || result.reason || current.last_emergency_reason || null,
+    last_emergency_seq: ack.seq || result.seq || current.last_emergency_seq || null,
+    last_emergency_command_ms: ack.timestamp_ms || current.last_emergency_command_ms || null,
+  };
 }
 
 function normalizeBackendUrl(value) {
@@ -628,12 +933,14 @@ function saveBackendUrl() {
     runtimeState.version = '';
   }
   renderRuntimeConnection();
+  renderEmergencyControls();
 }
 
 function setRuntimeStatus(status, message = '') {
   runtimeState.status = status;
   runtimeState.message = message || runtimeState.message;
   renderRuntimeConnection();
+  renderEmergencyControls();
 }
 
 function shouldPollDroneConnections() {
@@ -746,15 +1053,24 @@ function markVehiclesConnecting() {
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
+      release_state: null,
       trigger_state: 'UNKNOWN',
       last_trigger_seq: null,
       last_trigger_state: 'UNKNOWN',
       last_trigger_reason: null,
       last_trigger_relationship_id: null,
+      last_trigger_target_vehicle_id: null,
       last_trigger_completed_ms: null,
       rc_trigger_channel: null,
       rc_trigger_threshold: null,
       rc_trigger_active: null,
+      rc_trigger_latched: null,
+      emergency: null,
+      last_emergency_action: null,
+      last_emergency_result: null,
+      last_emergency_reason: null,
+      last_emergency_seq: null,
+      last_emergency_command_ms: null,
       reason: 'ping_sent',
       message: 'Waiting for UDP PONG...',
     };
@@ -781,15 +1097,24 @@ function applyDroneStatusResults(results) {
       last_fc_heartbeat_ms: result?.last_fc_heartbeat_ms ?? null,
       position: result?.position ?? null,
       gps: result?.gps ?? null,
+      release_state: result?.release_state ?? null,
       trigger_state: result?.trigger_state || 'UNKNOWN',
       last_trigger_seq: result?.last_trigger_seq ?? null,
       last_trigger_state: result?.last_trigger_state || 'UNKNOWN',
       last_trigger_reason: result?.last_trigger_reason ?? null,
       last_trigger_relationship_id: result?.last_trigger_relationship_id ?? null,
+      last_trigger_target_vehicle_id: result?.last_trigger_target_vehicle_id ?? null,
       last_trigger_completed_ms: result?.last_trigger_completed_ms ?? null,
       rc_trigger_channel: result?.rc_trigger_channel ?? null,
       rc_trigger_threshold: result?.rc_trigger_threshold ?? null,
       rc_trigger_active: result?.rc_trigger_active ?? null,
+      rc_trigger_latched: result?.rc_trigger_latched ?? null,
+      emergency: result?.emergency ?? null,
+      last_emergency_action: result?.last_emergency_action ?? result?.emergency?.last_action ?? null,
+      last_emergency_result: result?.last_emergency_result ?? result?.emergency?.last_result ?? null,
+      last_emergency_reason: result?.last_emergency_reason ?? result?.emergency?.last_reason ?? null,
+      last_emergency_seq: result?.last_emergency_seq ?? result?.emergency?.last_seq ?? null,
+      last_emergency_command_ms: result?.last_emergency_command_ms ?? result?.emergency?.last_command_ms ?? null,
       reason: result?.reason || '',
       message: result?.message || '',
       seq: result?.seq,
@@ -813,15 +1138,24 @@ function applyDroneStatusResults(results) {
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
+      release_state: null,
       trigger_state: 'UNKNOWN',
       last_trigger_seq: null,
       last_trigger_state: 'UNKNOWN',
       last_trigger_reason: null,
       last_trigger_relationship_id: null,
+      last_trigger_target_vehicle_id: null,
       last_trigger_completed_ms: null,
       rc_trigger_channel: null,
       rc_trigger_threshold: null,
       rc_trigger_active: null,
+      rc_trigger_latched: null,
+      emergency: null,
+      last_emergency_action: null,
+      last_emergency_result: null,
+      last_emergency_reason: null,
+      last_emergency_seq: null,
+      last_emergency_command_ms: null,
       reason: '',
       message: '',
     };
@@ -965,15 +1299,24 @@ async function refreshDroneConnections({ silent = false } = {}) {
           last_fc_heartbeat_ms: null,
           position: null,
           gps: null,
+          release_state: null,
           trigger_state: 'UNKNOWN',
           last_trigger_seq: null,
           last_trigger_state: 'UNKNOWN',
           last_trigger_reason: null,
           last_trigger_relationship_id: null,
+          last_trigger_target_vehicle_id: null,
           last_trigger_completed_ms: null,
           rc_trigger_channel: null,
           rc_trigger_threshold: null,
           rc_trigger_active: null,
+          rc_trigger_latched: null,
+          emergency: null,
+          last_emergency_action: null,
+          last_emergency_result: null,
+          last_emergency_reason: null,
+          last_emergency_seq: null,
+          last_emergency_command_ms: null,
           reason: 'request_failed',
           message: error.message,
         };
@@ -1007,18 +1350,42 @@ function getVehicleConnection(vehicle) {
     last_fc_heartbeat_ms: null,
     position: null,
     gps: null,
+    release_state: null,
     trigger_state: 'UNKNOWN',
     last_trigger_seq: null,
     last_trigger_state: 'UNKNOWN',
     last_trigger_reason: null,
     last_trigger_relationship_id: null,
+    last_trigger_target_vehicle_id: null,
     last_trigger_completed_ms: null,
     rc_trigger_channel: null,
     rc_trigger_threshold: null,
     rc_trigger_active: null,
+    rc_trigger_latched: null,
+    emergency: null,
+    last_emergency_action: null,
+    last_emergency_result: null,
+    last_emergency_reason: null,
+    last_emergency_seq: null,
+    last_emergency_command_ms: null,
     reason: '',
     message: '',
   };
+}
+
+function isCarrierConnection(connection, vehicle) {
+  const role = String(connection?.role || vehicle?.role || '').trim().toLowerCase();
+  if (role === 'carrier') return true;
+
+  const hasCarrierRuntimeFields = (
+    connection?.release_state !== null && connection?.release_state !== undefined ||
+    connection?.rc_trigger_latched !== null && connection?.rc_trigger_latched !== undefined ||
+    connection?.rc_trigger_channel !== null && connection?.rc_trigger_channel !== undefined
+  );
+
+  if (hasCarrierRuntimeFields) return true;
+  if (role === 'child') return false;
+  return false;
 }
 
 function renderRuntimeConnection() {
@@ -1092,14 +1459,29 @@ function renderRuntimeConnection() {
       );
     }
 
-    if (vehicle.role === 'carrier') {
-      detailLines.push(['RC trigger condition', formatRcTriggerCondition(connection)]);
+    if (isCarrierConnection(connection, vehicle)) {
+      detailLines.push(
+        ['RC trigger condition', formatRcTriggerCondition(connection)],
+        ['Release Input', connection.release_state || 'UNKNOWN'],
+        ['RC Latched', formatRuntimeValue(connection.rc_trigger_latched)],
+        ['Carrier Trigger', connection.trigger_state || 'UNKNOWN'],
+        ['Child Delivery Result', connection.last_trigger_state || 'UNKNOWN'],
+        ['Reason', connection.last_trigger_reason || connection.reason || '-'],
+        ['Seq', formatRuntimeValue(connection.last_trigger_seq)],
+        ['Target', formatRuntimeValue(connection.last_trigger_target_vehicle_id)]
+      );
     } else {
       detailLines.push(
-        ['Trigger state', connection.trigger_state || 'UNKNOWN'],
-        ['Last trigger', connection.last_trigger_state || 'UNKNOWN'],
+        ['Trigger Receive', connection.trigger_state || 'UNKNOWN'],
+        ['FC Forward Result', connection.last_trigger_state || 'UNKNOWN'],
         ['Reason', connection.last_trigger_reason || connection.reason || '-'],
-        ['Trigger seq', formatRuntimeValue(connection.last_trigger_seq)]
+        ['Seq', formatRuntimeValue(connection.last_trigger_seq)]
+      );
+    }
+
+    if (connection.last_emergency_action || connection.emergency?.last_action) {
+      detailLines.push(
+        ['Emergency', formatEmergencyHealth(connection)]
       );
     }
 
@@ -1111,7 +1493,7 @@ function renderRuntimeConnection() {
     row.innerHTML = `
       <div class="vehicle-connection-name">
         <div>${escapeHtml(vehicle.name)} (${escapeHtml(vehicle.vehicle_id)})</div>
-        <div class="vehicle-connection-meta">${escapeHtml(vehicle.role)} · ${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</div>
+        <div class="vehicle-connection-meta">${escapeHtml(formatVehicleRole(vehicle.role))} · ${escapeHtml(vehicle.ip)}:${escapeHtml(vehicle.udp_port)}</div>
         <div class="vehicle-connection-details">
           ${detailHtml}
         </div>
@@ -1240,7 +1622,7 @@ function renderWaypointRows() {
     const select = document.createElement('select');
     select.dataset.field = 'action';
     select.dataset.idx = idx;
-    select.disabled = vehicle.role !== 'carrier';
+    select.disabled = normalizeVehicleRole(vehicle.role) !== 'carrier';
 
     const actionOptions = [
       ['NONE', 'NONE'],
@@ -1675,7 +2057,7 @@ function getNextRelationshipOrder(triggerVehicleId, triggerWaypointId, relations
 
 function requiresReleaseBeforeStart(targetVehicle) {
   return (
-    targetVehicle.role === 'child' ||
+    normalizeVehicleRole(targetVehicle.role) === 'child' ||
     targetVehicle.firmware_profile === 'px4_nav_ready_gate'
   );
 }
@@ -1923,7 +2305,7 @@ function sanityCheckMission(mission, vehicle = getSelectedVehicle()) {
     if (Number(wp.alt) <= 0) warnings.push(`WP${wp.seq}: altitude가 0 이하입니다.`);
   }
 
-  if (vehicle && vehicle.role === 'carrier') {
+  if (vehicle && normalizeVehicleRole(vehicle.role) === 'carrier') {
     const releases = mission.waypoints.filter(wp => wp.action && wp.action.startsWith('RELEASE'));
     if (releases.length === 0) warnings.push('carrier mission에 release action이 없습니다.');
   }
@@ -2192,9 +2574,11 @@ function importPackageJson(e) {
       }
 
       state = imported;
+      state.vehicles = state.vehicles.map(stripRuntimeFieldsFromVehicle);
       state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
       syncSettingsToForm();
       renderAll();
+      saveVehicleConfigs({ silent: true });
       if (warnings.length > 0) {
         alert(`불러오기 보정:\n- ${warnings.join('\n- ')}`);
       }
@@ -2250,6 +2634,16 @@ function formatRcTriggerCondition(connection) {
   return state;
 }
 
+function formatEmergencyHealth(connection) {
+  const emergency = connection.emergency || {};
+  const action = connection.last_emergency_action || emergency.last_action || '-';
+  const result = connection.last_emergency_result || emergency.last_result || '-';
+  const reason = connection.last_emergency_reason || emergency.last_reason || '-';
+  const seq = connection.last_emergency_seq || emergency.last_seq;
+
+  return `${action} / ${result} / ${reason}${seq ? ` / seq ${seq}` : ''}`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -2259,6 +2653,11 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-syncSettingsToForm();
-renderAll();
-startBackendHealthMonitor();
+async function initializeApp() {
+  syncSettingsToForm();
+  renderAll();
+  startBackendHealthMonitor();
+  await loadVehicleConfigs();
+}
+
+initializeApp();
