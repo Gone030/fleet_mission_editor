@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "vehicles": [
+    {
+      "sysid": 1,
+      "sort_order": 1,
+      "udp_port": 50051,
+      "vehicle_id": "vehicle_01",
+      "firmware_profile": "standard_px4",
+      "ip": "192.168.0.252",
+      "name": "Vehicle-1",
+      "collapsed": false,
+      "parent_vehicle_id": null,
+      "role": "carrier",
+      "color": "#0891b2"
+    },
+    {
+      "sysid": 11,
+      "sort_order": 1,
+      "udp_port": 50051,
+      "vehicle_id": "Child_01",
+      "firmware_profile": "px4_nav_ready_gate",
+      "ip": "192.168.0.71",
+      "name": "Child-1",
+      "collapsed": false,
+      "parent_vehicle_id": "vehicle_01",
+      "role": "child",
+      "color": "#4f46e5"
+    }
+  ],
+  "updated_at_ms": 1782287349306
+}
