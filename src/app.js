@@ -80,6 +80,88 @@ function getSelectedMission() {
   return getMissionByVehicleId(state.selectedVehicleId);
 }
 
+function getSectionCollapseStorageKey(sectionId) {
+  return `fleetMissionEditor.sectionCollapsed.${sectionId}`;
+}
+
+function getStoredSectionCollapsed(sectionId) {
+  try {
+    return window.localStorage.getItem(getSectionCollapseStorageKey(sectionId)) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function setStoredSectionCollapsed(sectionId, collapsed) {
+  try {
+    window.localStorage.setItem(getSectionCollapseStorageKey(sectionId), String(collapsed));
+  } catch {
+    // Ignore localStorage failures; collapse still works for the current session.
+  }
+}
+
+function setSectionCollapsed(section, sectionId, collapsed) {
+  const button = section.querySelector('.section-collapse-toggle');
+  section.classList.toggle('is-collapsed', collapsed);
+  if (button) {
+    button.textContent = collapsed ? '▸' : '▾';
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.title = collapsed ? '펼치기' : '접기';
+  }
+  setStoredSectionCollapsed(sectionId, collapsed);
+}
+
+function setupCollapsibleSections() {
+  for (const section of document.querySelectorAll('.section')) {
+    const heading = section.querySelector(':scope h2');
+    if (!heading) continue;
+
+    const title = heading.textContent.trim();
+    const sectionId = COLLAPSIBLE_SECTION_IDS[title];
+    if (!sectionId || section.dataset.collapsibleSection === sectionId) continue;
+
+    let header = section.querySelector(':scope > .section-head');
+    if (!header) {
+      header = document.createElement('div');
+      header.className = 'section-head collapsible-section-head';
+      section.insertBefore(header, heading);
+      header.appendChild(heading);
+    } else {
+      header.classList.add('collapsible-section-head');
+    }
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'section-collapse-toggle';
+    toggle.setAttribute('aria-label', `${title} 접기/펼치기`);
+    header.appendChild(toggle);
+
+    const body = document.createElement('div');
+    body.className = 'collapsible-section-body';
+    while (header.nextSibling) {
+      body.appendChild(header.nextSibling);
+    }
+    section.appendChild(body);
+
+    section.dataset.collapsibleSection = sectionId;
+    header.addEventListener('click', (event) => {
+      if (
+        event.target.closest('button') &&
+        !event.target.classList.contains('section-collapse-toggle')
+      ) {
+        return;
+      }
+      setSectionCollapsed(section, sectionId, !section.classList.contains('is-collapsed'));
+    });
+    toggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setSectionCollapsed(section, sectionId, !section.classList.contains('is-collapsed'));
+    });
+
+    setSectionCollapsed(section, sectionId, getStoredSectionCollapsed(sectionId));
+  }
+}
+
 function getTopLevelVehicles() {
   return getVehicles()
     .filter((vehicle) => vehicle.parent_vehicle_id === null)
@@ -147,6 +229,16 @@ const VEHICLE_CONFIG_FIELDS = [
   'firmware_profile',
 ];
 
+const COLLAPSIBLE_SECTION_IDS = {
+  'Vehicle Connection Settings': 'vehicle-connection-settings',
+  'Runtime Connection': 'runtime-connection',
+  'Companion Link Test': 'companion-link-test',
+  'Waypoint 목록': 'waypoint-list',
+  'Relationship Editor': 'relationship-editor',
+  'Sanity Check': 'sanity-check',
+  'QGC Plan 설정': 'qgc-plan-settings',
+};
+
 const VEHICLE_COLORS = [
   '#0891b2',
   '#4f46e5',
@@ -168,6 +260,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
+
+setupCollapsibleSections();
 
 document.getElementById('exportPackageBtn').addEventListener('click', exportPackageJson);
 document.getElementById('importPackageInput').addEventListener('change', importPackageJson);
