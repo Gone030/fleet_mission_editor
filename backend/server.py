@@ -73,6 +73,13 @@ class EmergencyActionRequest(BaseModel):
     action: str
 
 
+class CompanionLinkTestRequest(BaseModel):
+    source_vehicle_id: str
+    target_vehicle_id: str
+    count: int = Field(default=5, ge=1, le=20)
+    timeout_ms: int = Field(default=500, ge=100, le=5000)
+
+
 class VehiclesConfigRequest(BaseModel):
     vehicles: list[dict]
 
@@ -380,6 +387,90 @@ def send_emergency_action(vehicle, action, timeout_sec=1.0):
         }
 
 
+def send_companion_link_test(source_vehicle, target_vehicle, count=5, timeout_ms=500):
+    seq = now_ms()
+    payload = {
+        "type": "COMPANION_LINK_TEST",
+        "seq": seq,
+        "target_vehicle_id": target_vehicle.vehicle_id,
+        "target_ip": target_vehicle.ip,
+        "target_port": target_vehicle.udp_port,
+        "count": count,
+        "timeout_ms": timeout_ms,
+    }
+    backend_timeout_sec = max(2.0, (count * timeout_ms / 1000.0) + 1.0)
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(backend_timeout_sec)
+            udp_socket.sendto(
+                json.dumps(payload).encode("utf-8"),
+                (source_vehicle.ip, source_vehicle.udp_port),
+            )
+            data, address = udp_socket.recvfrom(65535)
+
+        result = json.loads(data.decode("utf-8"))
+        is_valid_result = (
+            result.get("type") == "COMPANION_LINK_TEST_RESULT"
+            and result.get("seq") == seq
+        )
+
+        if not is_valid_result:
+            return {
+                "type": "COMPANION_LINK_TEST_RESULT",
+                "ok": False,
+                "accepted": False,
+                "source_vehicle_id": source_vehicle.vehicle_id,
+                "target_vehicle_id": target_vehicle.vehicle_id,
+                "target_ip": target_vehicle.ip,
+                "target_port": target_vehicle.udp_port,
+                "seq": seq,
+                "sent": count,
+                "received": 0,
+                "lost": count,
+                "reason": "invalid_response",
+                "response": result,
+                "timestamp_ms": now_ms(),
+            }
+
+        result["backend_ok"] = bool(result.get("ok"))
+        result["backend_remote"] = f"{address[0]}:{address[1]}"
+        return result
+    except socket.timeout:
+        return {
+            "type": "COMPANION_LINK_TEST_RESULT",
+            "ok": False,
+            "accepted": False,
+            "source_vehicle_id": source_vehicle.vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "target_ip": target_vehicle.ip,
+            "target_port": target_vehicle.udp_port,
+            "seq": seq,
+            "sent": count,
+            "received": 0,
+            "lost": count,
+            "reason": "timeout",
+            "timestamp_ms": now_ms(),
+        }
+    except Exception as error:
+        return {
+            "type": "COMPANION_LINK_TEST_RESULT",
+            "ok": False,
+            "accepted": False,
+            "source_vehicle_id": source_vehicle.vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "target_ip": target_vehicle.ip,
+            "target_port": target_vehicle.udp_port,
+            "seq": seq,
+            "sent": count,
+            "received": 0,
+            "lost": count,
+            "reason": "send_error",
+            "message": str(error),
+            "timestamp_ms": now_ms(),
+        }
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -488,6 +579,56 @@ def emergency_action(vehicle_id: str, request: EmergencyActionRequest):
         )
 
     return send_emergency_action(vehicle, action)
+
+
+@app.post("/api/companion/link-test")
+def companion_link_test(request: CompanionLinkTestRequest):
+    source_vehicle = known_drone_configs.get(request.source_vehicle_id)
+    target_vehicle = known_drone_configs.get(request.target_vehicle_id)
+
+    if not source_vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "reason": "source_vehicle_not_found",
+                "source_vehicle_id": request.source_vehicle_id,
+            },
+        )
+    if not target_vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "reason": "target_vehicle_not_found",
+                "target_vehicle_id": request.target_vehicle_id,
+            },
+        )
+    if not source_vehicle.ip or not source_vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_source_endpoint",
+                "source_vehicle_id": request.source_vehicle_id,
+            },
+        )
+    if not target_vehicle.ip or not target_vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_target_endpoint",
+                "target_vehicle_id": request.target_vehicle_id,
+            },
+        )
+
+    return send_companion_link_test(
+        source_vehicle,
+        target_vehicle,
+        count=request.count,
+        timeout_ms=request.timeout_ms,
+    )
 
 
 @app.get("/")

@@ -387,6 +387,39 @@
     .save-status.is-saving { color: var(--warn); }
     .save-status.is-saved { color: var(--ok); }
     .save-status.is-error { color: var(--danger); }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .inline-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .runtime-result {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1220;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .link-test-summary {
+      margin-bottom: 8px;
+    }
+    .link-test-details {
+      display: grid;
+      gap: 4px;
+    }
+    .link-test-row {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      opacity: .9;
+    }
 
     .child-card {
     margin-left: calc(var(--tree-depth, 1) * 18px);

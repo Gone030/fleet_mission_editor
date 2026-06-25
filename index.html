@@ -169,6 +169,27 @@
         </div>
       </div>
 
+      <div class="section" id="companionLinkTestCard">
+        <div class="section-head">
+          <h2>Companion Link Test</h2>
+          <span id="linkTestStatusBadge" class="badge">IDLE</span>
+        </div>
+        <div>
+          <label for="linkTestSource">Sender Companion</label>
+          <select id="linkTestSource"></select>
+        </div>
+        <div style="margin-top:8px;">
+          <label for="linkTestTarget">Receiver Companion</label>
+          <select id="linkTestTarget"></select>
+        </div>
+        <div class="inline-fields" style="margin-top:8px;">
+          <div><label for="linkTestCount">Count</label><input id="linkTestCount" type="number" min="1" max="20" value="5" /></div>
+          <div><label for="linkTestTimeoutMs">Timeout ms</label><input id="linkTestTimeoutMs" type="number" min="100" max="5000" value="500" /></div>
+        </div>
+        <button id="runLinkTestBtn" type="button" style="width:100%; margin-top:10px;">Run Ping Test</button>
+        <div id="linkTestResult" class="runtime-result muted">No link test yet.</div>
+      </div>
+
       <div class="section">
         <h2>Waypoint 목록</h2>
         <table class="wp-table">

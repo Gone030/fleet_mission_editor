@@ -34,6 +34,8 @@ const runtimeState = {
   vehicleSaveStatus: 'Vehicles not loaded',
   vehicleSaveStatusKind: '',
   vehicleSaveInFlight: false,
+  linkTestRunning: false,
+  lastLinkTestResult: null,
 };
 
 function getDefaultBackendUrl() {
@@ -193,6 +195,7 @@ document.getElementById('exportQgcBtn').addEventListener('click', exportSelected
 document.getElementById('clearMissionBtn').addEventListener('click', clearSelectedMission);
 document.getElementById('focusSelectedBtn').addEventListener('click', focusSelectedLiveDrone);
 document.getElementById('fitLiveDronesBtn').addEventListener('click', fitLiveDroneMarkers);
+document.getElementById('runLinkTestBtn').addEventListener('click', runCompanionLinkTest);
 document.getElementById('relationshipForm').addEventListener('submit', addRelationshipFromForm);
 
 for (const id of ['firmwareType', 'vehicleType', 'hoverSpeed', 'cruiseSpeed', 'useFirstAsTakeoff']) {
@@ -207,6 +210,7 @@ function renderAll() {
   updateLiveDroneMarkers();
   renderMissionSummary();
   renderEmergencyControls();
+  renderCompanionLinkTest();
   renderRelationshipEditor();
   renderRelationshipList();
   renderSanityCheck();
@@ -786,6 +790,225 @@ function renderEmergencyControls() {
     : 'Backend must be online before executing an emergency action.';
 }
 
+function renderCompanionLinkTest() {
+  const sourceSelect = document.getElementById('linkTestSource');
+  const targetSelect = document.getElementById('linkTestTarget');
+  const countInput = document.getElementById('linkTestCount');
+  const timeoutInput = document.getElementById('linkTestTimeoutMs');
+  const runButton = document.getElementById('runLinkTestBtn');
+  const resultBox = document.getElementById('linkTestResult');
+  const badge = document.getElementById('linkTestStatusBadge');
+  if (!sourceSelect || !targetSelect || !runButton || !resultBox || !badge) return;
+
+  const vehicles = getVehicles();
+  const previousSource = sourceSelect.value;
+  const previousTarget = targetSelect.value;
+  sourceSelect.innerHTML = '';
+  targetSelect.innerHTML = '';
+
+  for (const vehicle of vehicles) {
+    const label = `${vehicle.name} (${vehicle.vehicle_id}) · ${vehicle.ip}:${vehicle.udp_port}`;
+    const sourceOption = document.createElement('option');
+    sourceOption.value = vehicle.vehicle_id;
+    sourceOption.textContent = label;
+    sourceSelect.appendChild(sourceOption);
+
+    const targetOption = document.createElement('option');
+    targetOption.value = vehicle.vehicle_id;
+    targetOption.textContent = label;
+    targetSelect.appendChild(targetOption);
+  }
+
+  const defaultSource = vehicles.find((vehicle) => normalizeVehicleRole(vehicle.role) === 'carrier') || vehicles[0];
+  const defaultTarget = vehicles.find((vehicle) => normalizeVehicleRole(vehicle.role) === 'child') || vehicles[1] || vehicles[0];
+  sourceSelect.value = vehicles.some((vehicle) => vehicle.vehicle_id === previousSource)
+    ? previousSource
+    : defaultSource?.vehicle_id || '';
+  targetSelect.value = vehicles.some((vehicle) => vehicle.vehicle_id === previousTarget)
+    ? previousTarget
+    : defaultTarget?.vehicle_id || '';
+
+  const runnable =
+    runtimeState.status === 'BACKEND ONLINE' &&
+    !runtimeState.linkTestRunning &&
+    !!sourceSelect.value &&
+    !!targetSelect.value &&
+    sourceSelect.value !== targetSelect.value;
+  runButton.disabled = !runnable;
+  countInput.disabled = runtimeState.linkTestRunning;
+  timeoutInput.disabled = runtimeState.linkTestRunning;
+
+  if (runtimeState.linkTestRunning) {
+    badge.textContent = 'RUNNING';
+    badge.className = 'badge warn';
+    resultBox.textContent = 'Running companion link test...';
+    return;
+  }
+
+  const result = runtimeState.lastLinkTestResult;
+  if (!result) {
+    badge.textContent = 'IDLE';
+    badge.className = 'badge';
+    resultBox.textContent = vehicles.length < 2
+      ? 'Add at least two vehicles to run a link test.'
+      : 'No link test yet.';
+    return;
+  }
+
+  badge.textContent = result.ok ? 'OK' : 'FAIL';
+  badge.className = result.ok ? 'badge ok' : 'badge warn';
+  resultBox.innerHTML = formatLinkTestResult(result);
+}
+
+function formatLinkTestResult(result) {
+  const source = escapeHtml(result.source_vehicle_id || '-');
+  const target = escapeHtml(result.target_vehicle_id || '-');
+  const sent = Number(result.sent ?? 0);
+  const received = Number(result.received ?? 0);
+  const lost = Number(result.lost ?? Math.max(0, sent - received));
+  const reason = escapeHtml(result.reason || '-');
+  const duration = result.duration_ms !== null && result.duration_ms !== undefined
+    ? `${escapeHtml(result.duration_ms)} ms`
+    : '-';
+  const rows = Array.isArray(result.results)
+    ? result.results.map((item) => {
+        const status = item.ok ? 'OK' : 'FAIL';
+        const rtt = item.rtt_ms !== null && item.rtt_ms !== undefined ? `${item.rtt_ms} ms` : '-';
+        const responder = escapeHtml(item.responder_vehicle_id || '-');
+        const reasonText = escapeHtml(item.reason || '');
+        return `<div class="link-test-row">#${escapeHtml(item.index)} ${status} · rtt ${escapeHtml(rtt)} · ${responder}${reasonText ? ` · ${reasonText}` : ''}</div>`;
+      }).join('')
+    : '';
+
+  return `
+    <div class="link-test-summary">
+      <strong>${source} → ${target}</strong><br />
+      ${received} / ${sent} ${result.ok ? 'OK' : 'received'} · lost ${lost}<br />
+      duration: ${duration}<br />
+      reason: ${reason}
+    </div>
+    <div class="link-test-details">${rows}</div>
+  `;
+}
+
+function parseLinkTestError(responseBody, sourceVehicleId, targetVehicleId, count) {
+  const detail = responseBody?.detail && typeof responseBody.detail === 'object'
+    ? responseBody.detail
+    : responseBody;
+
+  return {
+    type: 'COMPANION_LINK_TEST_RESULT',
+    ok: false,
+    accepted: false,
+    source_vehicle_id: detail?.source_vehicle_id || sourceVehicleId,
+    target_vehicle_id: detail?.target_vehicle_id || targetVehicleId,
+    sent: count,
+    received: 0,
+    lost: count,
+    reason: detail?.reason || detail?.message || 'request_failed',
+    detail: responseBody,
+    timestamp_ms: Date.now(),
+  };
+}
+
+async function runCompanionLinkTest() {
+  const sourceVehicleId = document.getElementById('linkTestSource').value;
+  const targetVehicleId = document.getElementById('linkTestTarget').value;
+  const count = Number(document.getElementById('linkTestCount').value || 5);
+  const timeoutMs = Number(document.getElementById('linkTestTimeoutMs').value || 500);
+
+  if (!sourceVehicleId || !targetVehicleId) {
+    alert('Sender와 Receiver를 선택하세요.');
+    return;
+  }
+  if (sourceVehicleId === targetVehicleId) {
+    alert('Sender와 Receiver는 달라야 합니다.');
+    return;
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    alert('Count는 1~20 사이의 숫자여야 합니다.');
+    return;
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 5000) {
+    alert('Timeout은 100~5000 ms 사이의 숫자여야 합니다.');
+    return;
+  }
+
+  saveBackendUrl();
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    runtimeState.lastLinkTestResult = {
+      ok: false,
+      source_vehicle_id: sourceVehicleId,
+      target_vehicle_id: targetVehicleId,
+      sent: count,
+      received: 0,
+      lost: count,
+      reason: 'backend_not_online',
+      timestamp_ms: Date.now(),
+    };
+    renderCompanionLinkTest();
+    return;
+  }
+
+  const saved = await saveVehicleConfigs({ silent: true });
+  if (!saved) {
+    runtimeState.lastLinkTestResult = {
+      ok: false,
+      source_vehicle_id: sourceVehicleId,
+      target_vehicle_id: targetVehicleId,
+      sent: count,
+      received: 0,
+      lost: count,
+      reason: 'vehicle_config_save_failed',
+      timestamp_ms: Date.now(),
+    };
+    renderCompanionLinkTest();
+    return;
+  }
+
+  runtimeState.linkTestRunning = true;
+  runtimeState.lastLinkTestResult = null;
+  renderCompanionLinkTest();
+
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}/api/companion/link-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        source_vehicle_id: sourceVehicleId,
+        target_vehicle_id: targetVehicleId,
+        count,
+        timeout_ms: timeoutMs,
+      }),
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      runtimeState.lastLinkTestResult = parseLinkTestError(payload, sourceVehicleId, targetVehicleId, count);
+    } else {
+      runtimeState.lastLinkTestResult = payload;
+    }
+  } catch (error) {
+    runtimeState.lastLinkTestResult = {
+      type: 'COMPANION_LINK_TEST_RESULT',
+      ok: false,
+      accepted: false,
+      source_vehicle_id: sourceVehicleId,
+      target_vehicle_id: targetVehicleId,
+      sent: count,
+      received: 0,
+      lost: count,
+      reason: 'frontend_fetch_error',
+      message: String(error),
+      timestamp_ms: Date.now(),
+    };
+  } finally {
+    runtimeState.linkTestRunning = false;
+    renderCompanionLinkTest();
+  }
+}
+
 function formatEmergencyResult(result) {
   if (!result) return '';
   if (result.ok) {
@@ -934,6 +1157,7 @@ function saveBackendUrl() {
   }
   renderRuntimeConnection();
   renderEmergencyControls();
+  renderCompanionLinkTest();
 }
 
 function setRuntimeStatus(status, message = '') {
@@ -941,6 +1165,7 @@ function setRuntimeStatus(status, message = '') {
   runtimeState.message = message || runtimeState.message;
   renderRuntimeConnection();
   renderEmergencyControls();
+  renderCompanionLinkTest();
 }
 
 function shouldPollDroneConnections() {
