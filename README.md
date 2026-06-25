@@ -98,6 +98,24 @@ Start Fleet Mission Editor.bat
 `.venv`가 없으면 자동으로 만들고, backend requirements를 설치한 뒤
 브라우저에서 `http://127.0.0.1:8000`을 자동으로 연다.
 
+Windows 선행 조건:
+
+```text
+Python 3.9 이상 권장
+```
+
+설치 확인:
+
+```text
+py -3 --version
+```
+
+패키지 설치 오류가 나면 다음을 먼저 실행한 뒤 `.bat`를 다시 실행한다.
+
+```text
+py -3 -m pip install --upgrade pip
+```
+
 Local Runtime Backend를 별도 터미널에서 직접 실행하려면 다음 명령을 사용한다.
 
 ```text

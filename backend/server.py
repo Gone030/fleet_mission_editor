@@ -2,6 +2,7 @@ import json
 import socket
 import time
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,12 +62,12 @@ class DroneConnectionRequestVehicle(BaseModel):
     name: str
     role: str
     ip: str
-    udp_port: int | None = Field(default=None, ge=1, le=65535)
+    udp_port: Optional[int] = Field(default=None, ge=1, le=65535)
     firmware_profile: str
 
 
 class DroneConnectionRequest(BaseModel):
-    vehicles: list[DroneConnectionRequestVehicle]
+    vehicles: List[DroneConnectionRequestVehicle]
 
 
 class EmergencyActionRequest(BaseModel):
@@ -81,7 +82,7 @@ class CompanionLinkTestRequest(BaseModel):
 
 
 class VehiclesConfigRequest(BaseModel):
-    vehicles: list[dict]
+    vehicles: List[Dict]
 
 
 def now_ms():
