@@ -153,20 +153,29 @@
 
     <main id="map"></main>
 
+    <div id="rightSidebarResizeHandle" class="sidebar-resize-handle" title="오른쪽 사이드바 크기 조절"></div>
+
     <aside class="right">
       <div class="section">
         <h2>선택 드론 Mission</h2>
         <div class="grid3">
-          <div><label>기본 고도 m</label><input id="defaultAlt" type="number" step="1" value="10" /></div>
+          <div><label id="defaultAltLabel">기본 고도 m</label><input id="defaultAlt" type="number" step="1" value="10" /></div>
           <div><label>WP 수</label><input id="wpCount" disabled /></div>
           <div><label>상태</label><input id="missionState" disabled /></div>
         </div>
-        <div class="toolbar" style="margin-top:10px;">
+        <div id="altitudeHelp" class="hint" style="margin-top:8px;">지상 Home 기준 상대고도</div>
+        <div class="mission-plan-actions" style="margin-top:10px;">
           <button id="exportQgcBtn" class="primary">선택 드론 .plan 저장</button>
+          <button id="validateMissionBtn" type="button">Validate Mission</button>
+          <button id="uploadMissionBtn" type="button">Upload to FC</button>
+          <button id="readBackMissionBtn" type="button">Read Back</button>
+          <button id="loadFcMissionBtn" type="button">Load FC Mission to Map</button>
+          <button id="uploadVerifyMissionBtn" type="button">Upload + Verify</button>
           <button id="clearMissionBtn">선택 드론 WP 삭제</button>
           <button id="focusSelectedBtn" type="button">Focus Selected</button>
           <button id="fitLiveDronesBtn" type="button">Fit Live Drones</button>
         </div>
+        <div id="missionValidationBox" class="runtime-result">No mission validation yet.</div>
       </div>
 
       <div class="section" id="companionLinkTestCard">
@@ -197,8 +206,8 @@
             <tr>
               <th>#</th>
               <th>좌표</th>
-              <th>고도</th>
-              <th>Action</th>
+              <th id="waypointAltitudeHeader">고도</th>
+              <th>Step / Action</th>
               <th></th>
             </tr>
           </thead>

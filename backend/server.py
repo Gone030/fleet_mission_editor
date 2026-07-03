@@ -85,6 +85,17 @@ class VehiclesConfigRequest(BaseModel):
     vehicles: List[Dict]
 
 
+class MissionPayloadRequest(BaseModel):
+    payload: Dict
+
+
+MISSION_FRAME_GLOBAL_RELATIVE_ALT = 3
+MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT = 6
+MISSION_COMMAND_NAV_WAYPOINT = 16
+MISSION_COMMAND_NAV_LAND = 21
+MISSION_COMMAND_NAV_TAKEOFF = 22
+
+
 def now_ms():
     return int(time.time() * 1000)
 
@@ -472,6 +483,231 @@ def send_companion_link_test(source_vehicle, target_vehicle, count=5, timeout_ms
         }
 
 
+def get_mission_vehicle(payload):
+    vehicle_id = str(payload.get("vehicle_id") or "").strip()
+    vehicle = known_drone_configs.get(vehicle_id)
+    if vehicle:
+        return vehicle
+
+    for config in active_vehicle_configs:
+        if config.get("vehicle_id") == vehicle_id:
+            return vehicle_config_to_request_vehicle(config)
+
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "ok": False,
+            "reason": "vehicle_not_found",
+            "vehicle_id": vehicle_id,
+        },
+    )
+
+
+def require_vehicle_endpoint(vehicle):
+    if not vehicle.ip or not vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_vehicle_endpoint",
+                "vehicle_id": vehicle.vehicle_id,
+            },
+        )
+
+
+def normalize_mission_item(item, index):
+    return {
+        "seq": int(item.get("seq", index)),
+        "frame": int(item.get("frame", MISSION_FRAME_GLOBAL_RELATIVE_ALT)),
+        "command": int(item.get("command")),
+        "current": int(item.get("current", 0)),
+        "autocontinue": int(item.get("autocontinue", item.get("autoContinue", 1))),
+        "param1": float(item.get("param1", 0) or 0),
+        "param2": float(item.get("param2", 0) or 0),
+        "param3": float(item.get("param3", 0) or 0),
+        "param4": item.get("param4"),
+        "x": float(item.get("x")),
+        "y": float(item.get("y")),
+        "z": float(item.get("z")),
+    }
+
+
+def normalize_mission_payload_for_companion(payload):
+    items = payload.get("items") or []
+    return {
+        "vehicle_id": payload.get("vehicle_id"),
+        "mission_id": payload.get("mission_id"),
+        "role": normalize_vehicle_role(payload.get("role")),
+        "mission_profile": payload.get("mission_profile"),
+        "items": [
+            normalize_mission_item(item, index)
+            for index, item in enumerate(items)
+        ],
+    }
+
+
+def send_companion_mission_message(vehicle, message, expected_type, timeout_sec=3.0):
+    started = time.monotonic()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(timeout_sec)
+            udp_socket.sendto(
+                json.dumps(message).encode("utf-8"),
+                (vehicle.ip, vehicle.udp_port),
+            )
+            data, address = udp_socket.recvfrom(65535)
+
+        response = json.loads(data.decode("utf-8"))
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        is_valid_response = (
+            response.get("type") == expected_type
+            and response.get("seq") == message.get("seq")
+        )
+        if not is_valid_response:
+            return {
+                "ok": False,
+                "reason": "invalid_response",
+                "expected_type": expected_type,
+                "message": message,
+                "response": response,
+                "latency_ms": elapsed_ms,
+                "remote": f"{address[0]}:{address[1]}",
+            }
+
+        response["backend_ok"] = bool(response.get("ok", response.get("accepted", True)))
+        response["backend_reason"] = response.get("reason") or response.get("result") or "response_received"
+        response["backend_latency_ms"] = elapsed_ms
+        response["backend_remote"] = f"{address[0]}:{address[1]}"
+        return response
+    except socket.timeout:
+        return {
+            "ok": False,
+            "reason": "timeout",
+            "expected_type": expected_type,
+            "seq": message.get("seq"),
+            "vehicle_id": vehicle.vehicle_id,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "reason": "send_error",
+            "expected_type": expected_type,
+            "seq": message.get("seq"),
+            "vehicle_id": vehicle.vehicle_id,
+            "message": str(error),
+        }
+
+
+def send_mission_upload(vehicle, payload):
+    normalized = normalize_mission_payload_for_companion(payload)
+    seq = now_ms()
+    message = {
+        "type": "MISSION_UPLOAD",
+        "seq": seq,
+        "vehicle_id": normalized["vehicle_id"],
+        "mission_id": normalized["mission_id"],
+        "role": normalized["role"],
+        "mission_profile": normalized["mission_profile"],
+        "items": normalized["items"],
+    }
+    result = send_companion_mission_message(
+        vehicle,
+        message,
+        "MISSION_UPLOAD_RESULT",
+    )
+    return {
+        "ok": bool(result.get("ok", result.get("backend_ok", False))),
+        "reason": result.get("reason") or result.get("backend_reason"),
+        "vehicle_id": vehicle.vehicle_id,
+        "uploaded_count": result.get("uploaded_count", result.get("count")),
+        "request": message,
+        "result": result,
+    }
+
+
+def send_mission_download(vehicle, payload):
+    seq = now_ms()
+    message = {
+        "type": "MISSION_DOWNLOAD",
+        "seq": seq,
+        "vehicle_id": payload.get("vehicle_id"),
+    }
+    result = send_companion_mission_message(
+        vehicle,
+        message,
+        "MISSION_DOWNLOAD_RESULT",
+    )
+    items = result.get("items")
+    if items is None and isinstance(result.get("mission"), dict):
+        items = result["mission"].get("items")
+    if items is None:
+        items = []
+    return {
+        "ok": bool(result.get("ok", result.get("backend_ok", False))),
+        "reason": result.get("reason") or result.get("backend_reason"),
+        "vehicle_id": vehicle.vehicle_id,
+        "downloaded_count": result.get("count", len(items)),
+        "items": items,
+        "request": message,
+        "result": result,
+    }
+
+
+def frames_compatible(expected_frame, actual_frame):
+    compatible_frames = {
+        MISSION_FRAME_GLOBAL_RELATIVE_ALT,
+        MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT,
+    }
+    return int(expected_frame) == int(actual_frame) or (
+        int(expected_frame) in compatible_frames
+        and int(actual_frame) in compatible_frames
+    )
+
+
+def compare_mission_items(upload_payload, download_items):
+    errors = []
+    warnings = []
+    expected_items = normalize_mission_payload_for_companion(upload_payload)["items"]
+    actual_items = []
+    for index, item in enumerate(download_items or []):
+        if not isinstance(item, dict):
+            errors.append(f"item_{index}_readback_must_be_object")
+            continue
+        try:
+            actual_items.append(normalize_mission_item(item, index))
+        except (TypeError, ValueError):
+            errors.append(f"item_{index}_readback_position_or_command_invalid")
+
+    if len(expected_items) != len(actual_items):
+        errors.append(f"item_count_mismatch expected={len(expected_items)} actual={len(actual_items)}")
+
+    for index, expected in enumerate(expected_items):
+        if index >= len(actual_items):
+            errors.append(f"item_{index}_missing_in_readback")
+            continue
+        actual = actual_items[index]
+        if expected["command"] != actual["command"]:
+            errors.append(f"item_{index}_command_mismatch expected={expected['command']} actual={actual['command']}")
+        if not frames_compatible(expected["frame"], actual["frame"]):
+            errors.append(f"item_{index}_frame_mismatch expected={expected['frame']} actual={actual['frame']}")
+        if abs(expected["z"] - actual["z"]) > 0.05:
+            errors.append(f"item_{index}_z_mismatch expected={expected['z']} actual={actual['z']}")
+        if abs(expected["x"] - actual["x"]) > 0.0000002:
+            errors.append(f"item_{index}_lat_mismatch expected={expected['x']} actual={actual['x']}")
+        if abs(expected["y"] - actual["y"]) > 0.0000002:
+            errors.append(f"item_{index}_lon_mismatch expected={expected['y']} actual={actual['y']}")
+        if expected["frame"] != actual["frame"] and frames_compatible(expected["frame"], actual["frame"]):
+            warnings.append(f"item_{index}_frame_compatible expected={expected['frame']} actual={actual['frame']}")
+
+    return {
+        "verified": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "expected_count": len(expected_items),
+        "actual_count": len(actual_items),
+    }
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -630,6 +866,233 @@ def companion_link_test(request: CompanionLinkTestRequest):
         count=request.count,
         timeout_ms=request.timeout_ms,
     )
+
+
+def validate_mission_upload_payload(payload):
+    errors = []
+    warnings = []
+
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "errors": ["payload_must_be_object"],
+            "warnings": warnings,
+        }
+
+    items = payload.get("items")
+    role = normalize_vehicle_role(payload.get("role"))
+
+    if not payload.get("vehicle_id"):
+        errors.append("vehicle_id_required")
+    if not payload.get("mission_id"):
+        errors.append("mission_id_required")
+    if not isinstance(items, list) or len(items) == 0:
+        errors.append("items_required")
+        items = []
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append(f"item_{index}_must_be_object")
+            continue
+        if item.get("frame") != 3:
+            warnings.append(f"item_{index}_frame_not_global_relative_alt")
+        if item.get("command") not in {
+            MISSION_COMMAND_NAV_WAYPOINT,
+            MISSION_COMMAND_NAV_LAND,
+            MISSION_COMMAND_NAV_TAKEOFF,
+        }:
+            errors.append(f"item_{index}_unsupported_command")
+        if item.get("x") is None or item.get("y") is None or item.get("z") is None:
+            errors.append(f"item_{index}_missing_position")
+        try:
+            float(item.get("x"))
+            float(item.get("y"))
+            float(item.get("z"))
+        except (TypeError, ValueError):
+            errors.append(f"item_{index}_position_must_be_number")
+
+    if role == "child" and items:
+        if items[0].get("command") == MISSION_COMMAND_NAV_TAKEOFF:
+            errors.append("child_first_item_must_not_be_takeoff")
+        if items[0].get("command") != MISSION_COMMAND_NAV_WAYPOINT:
+            warnings.append("child_first_item_should_be_nav_waypoint")
+        try:
+            if float(items[0].get("z") or 0) > 2:
+                warnings.append("child_wp1_alt_offset_gt_2m")
+        except (TypeError, ValueError):
+            pass
+        if len(items) == 1:
+            warnings.append("child_wp1_is_handoff_add_wp2_for_movement_check")
+
+    if role == "carrier":
+        commands = [item.get("command") for item in items if isinstance(item, dict)]
+        vehicles_by_id = {
+            vehicle.get("vehicle_id"): vehicle
+            for vehicle in active_vehicle_configs
+            if vehicle.get("vehicle_id")
+        }
+        if MISSION_COMMAND_NAV_TAKEOFF not in commands:
+            errors.append("carrier_takeoff_required")
+        if MISSION_COMMAND_NAV_LAND not in commands:
+            errors.append("carrier_land_required")
+
+        action_plan = payload.get("action_plan")
+        if action_plan is not None:
+            if not isinstance(action_plan, dict):
+                errors.append("action_plan_must_be_object")
+            else:
+                actions = action_plan.get("actions")
+                if not isinstance(actions, list):
+                    errors.append("action_plan_actions_must_be_array")
+                    actions = []
+                seen_targets = set()
+                for index, action in enumerate(actions):
+                    if not isinstance(action, dict):
+                        errors.append(f"action_{index}_must_be_object")
+                        continue
+                    if action.get("type") != "RELEASE_AND_TRIGGER_CHILD":
+                        errors.append(f"action_{index}_unsupported_type")
+                    trigger_seq = action.get("trigger_waypoint_seq")
+                    if not isinstance(trigger_seq, int) or trigger_seq < 1:
+                        errors.append(f"action_{index}_invalid_trigger_waypoint_seq")
+                    target_vehicle_id = action.get("target_vehicle_id")
+                    if not target_vehicle_id:
+                        errors.append(f"action_{index}_target_vehicle_id_required")
+                    elif target_vehicle_id in seen_targets:
+                        warnings.append(f"action_{index}_duplicate_target_vehicle_id")
+                    elif target_vehicle_id not in vehicles_by_id:
+                        errors.append(f"action_{index}_target_vehicle_not_found")
+                    elif normalize_vehicle_role(vehicles_by_id[target_vehicle_id].get("role")) != "child":
+                        errors.append(f"action_{index}_target_vehicle_not_child")
+                    seen_targets.add(target_vehicle_id)
+                    release = action.get("release")
+                    trigger = action.get("trigger")
+                    if not isinstance(release, dict):
+                        warnings.append(f"action_{index}_release_missing")
+                    else:
+                        if not release.get("servo_channel") or not release.get("pwm") or not release.get("hold_ms"):
+                            warnings.append(f"action_{index}_release_uses_default_or_incomplete_servo")
+                    if not isinstance(trigger, dict):
+                        warnings.append(f"action_{index}_trigger_missing")
+                    elif trigger.get("type") != "CHILD_NAV_GATE_TRIGGER":
+                        warnings.append(f"action_{index}_unexpected_trigger_type")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/missions/validate")
+def validate_mission_payload(request: MissionPayloadRequest):
+    validation = validate_mission_upload_payload(request.payload)
+    return {
+        **validation,
+        "payload": request.payload,
+    }
+
+
+@app.post("/api/missions/upload-dry-run")
+def upload_mission_dry_run(request: MissionPayloadRequest):
+    validation = validate_mission_upload_payload(request.payload)
+    return {
+        **validation,
+        "upload_ready": validation["ok"],
+        "action_plan_ready": bool(request.payload.get("action_plan")) and validation["ok"],
+        "action_plan_upload_implemented": False,
+        "message": "Mission/action-plan validation dry-run complete. ACTION_PLAN_UPLOAD is not sent in this step.",
+        "payload": request.payload,
+        "action_plan": request.payload.get("action_plan"),
+    }
+
+
+@app.post("/api/missions/upload")
+def upload_mission(request: MissionPayloadRequest):
+    validation = validate_mission_upload_payload(request.payload)
+    if not validation["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                **validation,
+                "reason": "mission_validation_failed",
+            },
+        )
+
+    vehicle = get_mission_vehicle(request.payload)
+    require_vehicle_endpoint(vehicle)
+    upload_result = send_mission_upload(vehicle, request.payload)
+    return {
+        "ok": bool(upload_result.get("ok")),
+        "vehicle_id": vehicle.vehicle_id,
+        "validation": validation,
+        "upload": upload_result,
+    }
+
+
+@app.post("/api/missions/download")
+def download_mission(request: MissionPayloadRequest):
+    if not isinstance(request.payload, dict) or not request.payload.get("vehicle_id"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "vehicle_id_required",
+            },
+        )
+
+    vehicle = get_mission_vehicle(request.payload)
+    require_vehicle_endpoint(vehicle)
+    download_result = send_mission_download(vehicle, request.payload)
+    return {
+        "ok": bool(download_result.get("ok")),
+        "vehicle_id": vehicle.vehicle_id,
+        "download": download_result,
+    }
+
+
+@app.post("/api/missions/upload-and-verify")
+def upload_and_verify_mission(request: MissionPayloadRequest):
+    validation = validate_mission_upload_payload(request.payload)
+    if not validation["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                **validation,
+                "reason": "mission_validation_failed",
+            },
+        )
+
+    vehicle = get_mission_vehicle(request.payload)
+    require_vehicle_endpoint(vehicle)
+    upload_result = send_mission_upload(vehicle, request.payload)
+    if not upload_result.get("ok"):
+        return {
+            "ok": False,
+            "vehicle_id": vehicle.vehicle_id,
+            "validation": validation,
+            "upload": upload_result,
+            "download": None,
+            "verification": {
+                "verified": False,
+                "errors": ["upload_failed"],
+                "warnings": [],
+            },
+        }
+
+    download_result = send_mission_download(vehicle, request.payload)
+    verification = compare_mission_items(
+        request.payload,
+        download_result.get("items") or [],
+    )
+    return {
+        "ok": bool(upload_result.get("ok")) and bool(download_result.get("ok")) and verification["verified"],
+        "vehicle_id": vehicle.vehicle_id,
+        "validation": validation,
+        "upload": upload_result,
+        "download": download_result,
+        "verification": verification,
+    }
 
 
 @app.get("/")

@@ -10,6 +10,7 @@
       --ok: #34d399;
       --warn: #fbbf24;
       --input: #0b1220;
+      --right-sidebar-width: 480px;
     }
     * { box-sizing: border-box; }
     body {
@@ -49,6 +50,18 @@
       gap: 8px;
       align-items: center;
     }
+    .mission-plan-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .mission-plan-actions button {
+      width: 100%;
+      min-height: 36px;
+      text-align: center;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
     button, .file-label {
       border: 1px solid var(--line);
       background: var(--panel2);
@@ -74,7 +87,7 @@
     .main {
       min-height: 0;
       display: grid;
-      grid-template-columns: 310px 1fr 390px;
+      grid-template-columns: 310px minmax(220px, 1fr) 8px var(--right-sidebar-width);
     }
     aside {
       min-height: 0;
@@ -83,6 +96,35 @@
       border-right: 1px solid var(--line);
     }
     aside.right { border-right: 0; border-left: 1px solid var(--line); }
+    .sidebar-resize-handle {
+      min-height: 0;
+      cursor: col-resize;
+      background: #020617;
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      position: relative;
+      z-index: 500;
+    }
+    .sidebar-resize-handle::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 44px;
+      border-left: 1px solid var(--muted);
+      border-right: 1px solid var(--muted);
+      opacity: .55;
+      transform: translate(-50%, -50%);
+    }
+    .sidebar-resize-handle:hover,
+    body.is-resizing-sidebar .sidebar-resize-handle {
+      background: #0b1220;
+    }
+    body.is-resizing-sidebar {
+      cursor: col-resize;
+      user-select: none;
+    }
     .section {
       padding: 14px;
       border-bottom: 1px solid var(--line);
@@ -429,6 +471,43 @@
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
+      overflow-x: auto;
+    }
+    .runtime-result pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .mission-result-table {
+      width: 100%;
+      margin-top: 10px;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .mission-result-table th,
+    .mission-result-table td {
+      padding: 4px 5px;
+      border: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+    .mission-result-table th:first-child,
+    .mission-result-table td:first-child {
+      text-align: left;
+    }
+    .release-controls {
+      display: grid;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .release-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(70px, 1fr));
+      gap: 6px;
+    }
+    .action-cell {
+      min-width: 170px;
     }
     .link-test-summary {
       margin-bottom: 8px;
