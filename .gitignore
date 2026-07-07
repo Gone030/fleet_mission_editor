@@ -11,3 +11,4 @@ __pychech__/
 
 *.log
 .DS_store
+backend/data/
