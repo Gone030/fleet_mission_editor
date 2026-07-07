@@ -74,6 +74,24 @@ class EmergencyActionRequest(BaseModel):
     action: str
 
 
+class ManualReleaseTriggerRequest(BaseModel):
+    target_vehicle_id: str
+    seq: Optional[int] = None
+
+
+class RuntimeStateResetRequest(BaseModel):
+    vehicle_id: str
+    scope: str = "all_runtime"
+    reset_trigger_dedupe: bool = True
+    reset_rc_latch: bool = False
+    seq: Optional[int] = None
+
+
+class MissionClearRequest(BaseModel):
+    vehicle_id: str
+    seq: Optional[int] = None
+
+
 class CompanionLinkTestRequest(BaseModel):
     source_vehicle_id: str
     target_vehicle_id: str
@@ -94,6 +112,13 @@ MISSION_FRAME_GLOBAL_RELATIVE_ALT_INT = 6
 MISSION_COMMAND_NAV_WAYPOINT = 16
 MISSION_COMMAND_NAV_LAND = 21
 MISSION_COMMAND_NAV_TAKEOFF = 22
+DEFAULT_RELEASE_ACTUATOR = {
+    "method": "MAV_CMD_DO_SET_ACTUATOR",
+    "actuator_index": 1,
+    "value": 0.4,
+    "hold_ms": 800,
+    "reset_value": -0.7,
+}
 
 
 def now_ms():
@@ -231,10 +256,12 @@ def normalize_fc_state(value):
     return "UNKNOWN"
 
 
-def make_status_result(vehicle, state, reason, seq=None, message=None, latency_ms=None, remote=None, health=None):
+def make_status_result(vehicle, state, reason, seq=None, message=None, latency_ms=None, remote=None, health=None, status_type=None):
     health = health if isinstance(health, dict) else {}
     timestamp_ms = now_ms()
     result = {
+        "type": status_type,
+        "status_type": status_type,
         "vehicle_id": vehicle.vehicle_id,
         "name": vehicle.name,
         "role": vehicle.role,
@@ -245,6 +272,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "timestamp_ms": timestamp_ms,
         "connection_state": state,
         "companion_state": state,
+        "companion_alive": health.get("companion_alive"),
         "fc_connected": normalize_fc_state(health.get("fc_connected")),
         "last_seen_ms": timestamp_ms if state == "CONNECTED" else None,
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
@@ -277,6 +305,86 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
     return result
 
 
+def request_vehicle_status(vehicle, seq, timeout_sec=1.0):
+    started = time.monotonic()
+    timestamp_ms = now_ms()
+    request = {
+        "type": "GET_STATUS",
+        "vehicle_id": vehicle.vehicle_id,
+        "seq": seq,
+        "timestamp_ms": timestamp_ms,
+    }
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(timeout_sec)
+            udp_socket.sendto(json.dumps(request).encode("utf-8"), (vehicle.ip, vehicle.udp_port))
+            data, address = udp_socket.recvfrom(65535)
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        status = json.loads(data.decode("utf-8"))
+        is_valid_status = (
+            status.get("type") == "STATUS"
+            and status.get("vehicle_id") == vehicle.vehicle_id
+            and status.get("seq") == seq
+        )
+
+        if not is_valid_status:
+            return make_status_result(
+                vehicle,
+                "ERROR",
+                "invalid_status",
+                seq=seq,
+                message="Invalid UDP STATUS response",
+                latency_ms=elapsed_ms,
+                remote=f"{address[0]}:{address[1]}",
+                status_type=status.get("type"),
+            )
+
+        health = status.get("health")
+        connected = isinstance(health, dict) and health.get("companion_alive") is True
+        return make_status_result(
+            vehicle,
+            "CONNECTED" if connected else "OFFLINE",
+            "status_received" if connected else "status_companion_not_alive",
+            seq=seq,
+            message=status.get("status", "OK"),
+            latency_ms=elapsed_ms,
+            remote=f"{address[0]}:{address[1]}",
+            health=health,
+            status_type="STATUS",
+        )
+    except socket.timeout:
+        return make_status_result(
+            vehicle,
+            "OFFLINE",
+            "status_timeout",
+            seq=seq,
+            message="UDP STATUS timeout",
+            status_type="STATUS",
+        )
+    except Exception as error:
+        return make_status_result(
+            vehicle,
+            "ERROR",
+            "status_error",
+            seq=seq,
+            message=str(error),
+            status_type="STATUS",
+        )
+
+
+def refresh_vehicle_status(vehicle, seq, timeout_sec=1.0):
+    status_result = request_vehicle_status(vehicle, seq, timeout_sec=timeout_sec)
+    if status_result.get("connection_state") == "CONNECTED":
+        return status_result
+
+    ping_result = ping_vehicle(vehicle, seq, timeout_sec=timeout_sec)
+    if ping_result.get("connection_state") == "CONNECTED":
+        return ping_result
+
+    return status_result if status_result.get("reason") != "status_timeout" else ping_result
+
+
 def ping_vehicle(vehicle, seq, timeout_sec=1.0):
     started = time.monotonic()
     timestamp_ms = now_ms()
@@ -290,7 +398,7 @@ def ping_vehicle(vehicle, seq, timeout_sec=1.0):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
             udp_socket.settimeout(timeout_sec)
             udp_socket.sendto(json.dumps(ping).encode("utf-8"), (vehicle.ip, vehicle.udp_port))
-            data, address = udp_socket.recvfrom(4096)
+            data, address = udp_socket.recvfrom(65535)
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         pong = json.loads(data.decode("utf-8"))
@@ -320,6 +428,7 @@ def ping_vehicle(vehicle, seq, timeout_sec=1.0):
             latency_ms=elapsed_ms,
             remote=f"{address[0]}:{address[1]}",
             health=pong.get("health"),
+            status_type="PONG",
         )
     except socket.timeout:
         return make_status_result(
@@ -396,6 +505,172 @@ def send_emergency_action(vehicle, action, timeout_sec=1.0):
             "seq": seq,
             "reason": "send_error",
             "message": str(error),
+        }
+
+
+def send_companion_command(vehicle, payload, expected_type, timeout_sec=2.0):
+    seq = payload.get("seq") or now_ms()
+    payload = {
+        **payload,
+        "seq": seq,
+        "vehicle_id": vehicle.vehicle_id,
+    }
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(timeout_sec)
+            udp_socket.sendto(
+                json.dumps(payload).encode("utf-8"),
+                (vehicle.ip, vehicle.udp_port),
+            )
+            data, address = udp_socket.recvfrom(65535)
+
+        result = json.loads(data.decode("utf-8"))
+        is_valid_result = (
+            result.get("type") == expected_type
+            and result.get("seq") == seq
+        )
+        if not is_valid_result:
+            return {
+                "ok": False,
+                "accepted": False,
+                "reason": "invalid_response",
+                "vehicle_id": vehicle.vehicle_id,
+                "seq": seq,
+                "request": payload,
+                "response": result,
+                "remote": f"{address[0]}:{address[1]}",
+            }
+
+        return {
+            "ok": bool(result.get("ok", result.get("accepted", True))),
+            "accepted": bool(result.get("accepted", result.get("ok", True))),
+            "reason": result.get("reason") or "result_received",
+            "vehicle_id": vehicle.vehicle_id,
+            "seq": seq,
+            "request": payload,
+            "result": result,
+            "remote": f"{address[0]}:{address[1]}",
+        }
+    except socket.timeout:
+        return {
+            "ok": False,
+            "accepted": False,
+            "reason": "timeout",
+            "vehicle_id": vehicle.vehicle_id,
+            "seq": seq,
+            "request": payload,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "accepted": False,
+            "reason": "send_error",
+            "message": str(error),
+            "vehicle_id": vehicle.vehicle_id,
+            "seq": seq,
+            "request": payload,
+        }
+
+
+def send_manual_release_trigger(carrier_vehicle, target_vehicle, seq=None, timeout_sec=5.0):
+    seq = seq or now_ms()
+    payload = {
+        "type": "MANUAL_RELEASE_TRIGGER",
+        "seq": seq,
+        "vehicle_id": carrier_vehicle.vehicle_id,
+        "target_vehicle_id": target_vehicle.vehicle_id,
+        "target_ip": target_vehicle.ip,
+        "target_port": target_vehicle.udp_port,
+        "release": dict(DEFAULT_RELEASE_ACTUATOR),
+    }
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(timeout_sec)
+            udp_socket.sendto(
+                json.dumps(payload).encode("utf-8"),
+                (carrier_vehicle.ip, carrier_vehicle.udp_port),
+            )
+            data, address = udp_socket.recvfrom(65535)
+
+        result = json.loads(data.decode("utf-8"))
+        response_type = result.get("type")
+        is_manual_result = response_type == "MANUAL_RELEASE_TRIGGER_RESULT"
+        is_child_trigger_ack = response_type == "CHILD_NAV_GATE_TRIGGER_ACK"
+        is_valid_result = (
+            is_manual_result
+            and result.get("seq") == seq
+        )
+        if not is_valid_result:
+            reason = "invalid_response"
+            warnings = []
+            if is_child_trigger_ack:
+                reason = "unexpected_child_ack_instead_of_manual_release_result"
+                warnings.append("Unexpected child trigger ACK received during manual release request")
+            return {
+                "ok": False,
+                "accepted": False,
+                "reason": reason,
+                "vehicle_id": carrier_vehicle.vehicle_id,
+                "target_vehicle_id": target_vehicle.vehicle_id,
+                "seq": seq,
+                "request": payload,
+                "response": result,
+                "warnings": warnings,
+                "remote": f"{address[0]}:{address[1]}",
+                "sent_to": {
+                    "ip": carrier_vehicle.ip,
+                    "udp_port": carrier_vehicle.udp_port,
+                    "vehicle_id": carrier_vehicle.vehicle_id,
+                },
+            }
+
+        warnings = []
+        if is_manual_result and result.get("vehicle_id") and result.get("vehicle_id") != carrier_vehicle.vehicle_id:
+            warnings.append(
+                f"response_vehicle_id_mismatch expected={carrier_vehicle.vehicle_id} actual={result.get('vehicle_id')}"
+            )
+
+        return {
+            "ok": bool(result.get("ok", result.get("accepted", True))),
+            "accepted": bool(result.get("accepted", result.get("ok", True))),
+            "reason": result.get("reason") or "result_received",
+            "relationship_id": result.get("relationship_id") or result.get("relationship_id") or f"manual_release_trigger_{seq}",
+            "action_status": result.get("action_status"),
+            "vehicle_id": carrier_vehicle.vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "seq": seq,
+            "warnings": warnings,
+            "request": payload,
+            "result": result,
+            "remote": f"{address[0]}:{address[1]}",
+            "sent_to": {
+                "ip": carrier_vehicle.ip,
+                "udp_port": carrier_vehicle.udp_port,
+                "vehicle_id": carrier_vehicle.vehicle_id,
+            },
+        }
+    except socket.timeout:
+        return {
+            "ok": False,
+            "accepted": False,
+            "reason": "timeout",
+            "vehicle_id": carrier_vehicle.vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "seq": seq,
+            "request": payload,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "accepted": False,
+            "reason": "send_error",
+            "message": str(error),
+            "vehicle_id": carrier_vehicle.vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "seq": seq,
+            "request": payload,
         }
 
 
@@ -760,7 +1035,7 @@ def connect_drones(request: DroneConnectionRequest):
     })
 
     results = [
-        ping_vehicle(vehicle, seq=index + 1)
+        refresh_vehicle_status(vehicle, seq=index + 1)
         for index, vehicle in enumerate(request.vehicles)
     ]
     last_drone_status["ok"] = True
@@ -816,6 +1091,125 @@ def emergency_action(vehicle_id: str, request: EmergencyActionRequest):
         )
 
     return send_emergency_action(vehicle, action)
+
+
+@app.post("/api/drones/{vehicle_id}/manual-release-trigger")
+def manual_release_trigger(vehicle_id: str, request: ManualReleaseTriggerRequest):
+    carrier_vehicle = known_drone_configs.get(vehicle_id)
+    target_vehicle = known_drone_configs.get(request.target_vehicle_id)
+
+    if not carrier_vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "reason": "carrier_vehicle_not_found",
+                "vehicle_id": vehicle_id,
+            },
+        )
+    if normalize_vehicle_role(carrier_vehicle.role) != "carrier":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "vehicle_must_be_carrier",
+                "vehicle_id": vehicle_id,
+            },
+        )
+    if not target_vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "reason": "target_vehicle_not_found",
+                "target_vehicle_id": request.target_vehicle_id,
+            },
+        )
+    if normalize_vehicle_role(target_vehicle.role) != "child":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "target_vehicle_must_be_child",
+                "target_vehicle_id": request.target_vehicle_id,
+            },
+        )
+    if not carrier_vehicle.ip or not carrier_vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_carrier_endpoint",
+                "vehicle_id": vehicle_id,
+            },
+        )
+    if not target_vehicle.ip or not target_vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_target_endpoint",
+                "target_vehicle_id": request.target_vehicle_id,
+            },
+        )
+
+    return send_manual_release_trigger(
+        carrier_vehicle,
+        target_vehicle,
+        seq=request.seq,
+    )
+
+
+def get_command_vehicle_or_raise(vehicle_id: str):
+    vehicle = known_drone_configs.get(vehicle_id)
+    if not vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "ok": False,
+                "reason": "vehicle_not_found",
+                "vehicle_id": vehicle_id,
+            },
+        )
+    if not vehicle.ip or not vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "missing_vehicle_endpoint",
+                "vehicle_id": vehicle_id,
+            },
+        )
+    return vehicle
+
+
+@app.post("/api/drone/runtime-reset")
+def runtime_state_reset(request: RuntimeStateResetRequest):
+    vehicle = get_command_vehicle_or_raise(request.vehicle_id)
+    return send_companion_command(
+        vehicle,
+        {
+            "type": "RUNTIME_STATE_RESET",
+            "seq": request.seq,
+            "scope": request.scope or "all_runtime",
+            "reset_trigger_dedupe": request.reset_trigger_dedupe,
+            "reset_rc_latch": request.reset_rc_latch,
+        },
+        "RUNTIME_STATE_RESET_RESULT",
+    )
+
+
+@app.post("/api/drone/mission-clear")
+def mission_clear(request: MissionClearRequest):
+    vehicle = get_command_vehicle_or_raise(request.vehicle_id)
+    return send_companion_command(
+        vehicle,
+        {
+            "type": "MISSION_CLEAR",
+            "seq": request.seq,
+        },
+        "MISSION_CLEAR_RESULT",
+    )
 
 
 @app.post("/api/companion/link-test")
@@ -970,8 +1364,16 @@ def validate_mission_upload_payload(payload):
                     if not isinstance(release, dict):
                         warnings.append(f"action_{index}_release_missing")
                     else:
-                        if not release.get("servo_channel") or not release.get("pwm") or not release.get("hold_ms"):
-                            warnings.append(f"action_{index}_release_uses_default_or_incomplete_servo")
+                        if release.get("method") != "MAV_CMD_DO_SET_ACTUATOR":
+                            errors.append(f"action_{index}_release_method_must_be_actuator")
+                        if release.get("actuator_index") != 1:
+                            errors.append(f"action_{index}_release_actuator_index_must_be_1")
+                        if release.get("value") != 0.4:
+                            warnings.append(f"action_{index}_release_value_not_verified_default")
+                        if release.get("reset_value") != -0.7:
+                            warnings.append(f"action_{index}_release_reset_value_not_verified_default")
+                        if release.get("hold_ms") != 800:
+                            warnings.append(f"action_{index}_release_hold_ms_not_verified_default")
                     if not isinstance(trigger, dict):
                         warnings.append(f"action_{index}_trigger_missing")
                     elif trigger.get("type") != "CHILD_NAV_GATE_TRIGGER":

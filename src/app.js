@@ -2,7 +2,6 @@ const INITIAL_MISSION_PACKAGE = {
   version: 1,
   vehicles: [],
   missions: [],
-  relationships: [],
   qgcPlanSettings: {
     firmwareType: 12,
     vehicleType: 2,
@@ -31,6 +30,12 @@ const runtimeState = {
   consecutiveDronePollingFailures: 0,
   emergencyInFlight: false,
   emergencyResult: null,
+  manualReleaseTriggerState: 'IDLE',
+  manualReleaseTriggerResult: null,
+  runtimeResetState: 'IDLE',
+  runtimeResetResult: null,
+  missionClearState: 'IDLE',
+  missionClearResult: null,
   vehicleSaveStatus: 'Vehicles not loaded',
   vehicleSaveStatusKind: '',
   vehicleSaveInFlight: false,
@@ -201,24 +206,17 @@ const CARRIER_STEP_TYPES = [
   'LAND',
 ];
 
-const DEFAULT_RELEASE_SERVO = {
-  method: 'MAV_CMD_DO_SET_SERVO',
-  servo_channel: 6,
-  pwm: 1900,
+const DEFAULT_RELEASE_ACTUATOR = {
+  method: 'MAV_CMD_DO_SET_ACTUATOR',
+  actuator_index: 1,
+  value: 0.4,
   hold_ms: 800,
+  reset_value: -0.7,
 };
 
 const DEFAULT_RELEASE_TRIGGER = {
   type: 'CHILD_NAV_GATE_TRIGGER',
 };
-
-const RELATIONSHIP_ACTION_TYPES = [
-  'START_MISSION',
-  'RELEASE',
-  'HOLD',
-  'RTL',
-  'LAND',
-];
 
 const FIRMWARE_PROFILES = [
   'standard_px4',
@@ -255,7 +253,7 @@ const COLLAPSIBLE_SECTION_IDS = {
   'Runtime Connection': 'runtime-connection',
   'Companion Link Test': 'companion-link-test',
   'Waypoint 목록': 'waypoint-list',
-  'Relationship Editor': 'relationship-editor',
+  'Companion Test Prep': 'companion-test-prep',
   'Sanity Check': 'sanity-check',
   'QGC Plan 설정': 'qgc-plan-settings',
 };
@@ -295,6 +293,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   if (confirm('모든 mission 데이터를 초기화할까요?')) {
     state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
     state.selectedVehicleId = null;
+    clearCompanionCommandResults();
     hideVehicleForm();
     syncSettingsToForm();
     renderAll();
@@ -302,6 +301,11 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 });
 document.getElementById('saveConnBtn').addEventListener('click', saveConnectionForm);
 document.getElementById('executeEmergencyBtn').addEventListener('click', executeEmergencyAction);
+document.getElementById('manualReleaseTriggerBtn').addEventListener('click', executeManualReleaseTrigger);
+document.getElementById('resetRuntimeStateBtn').addEventListener('click', resetRuntimeState);
+document.getElementById('clearFcMissionBtn').addEventListener('click', clearFcMission);
+document.getElementById('testPrepUploadMissionBtn').addEventListener('click', uploadSelectedMission);
+document.getElementById('uploadActionPlanBtn').addEventListener('click', uploadActionPlanDryRun);
 document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
 document.getElementById('refreshDroneStatusBtn').addEventListener('click', () => refreshDroneConnections());
 document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
@@ -316,7 +320,6 @@ document.getElementById('clearMissionBtn').addEventListener('click', clearSelect
 document.getElementById('focusSelectedBtn').addEventListener('click', focusSelectedLiveDrone);
 document.getElementById('fitLiveDronesBtn').addEventListener('click', fitLiveDroneMarkers);
 document.getElementById('runLinkTestBtn').addEventListener('click', runCompanionLinkTest);
-document.getElementById('relationshipForm').addEventListener('submit', addRelationshipFromForm);
 
 for (const id of ['firmwareType', 'vehicleType', 'hoverSpeed', 'cruiseSpeed', 'useFirstAsTakeoff']) {
   document.getElementById(id).addEventListener('change', saveQgcSettingsFromForm);
@@ -331,10 +334,18 @@ function renderAll() {
   renderMissionSummary();
   renderEmergencyControls();
   renderCompanionLinkTest();
-  renderRelationshipEditor();
-  renderRelationshipList();
+  renderCompanionTestPrep();
   renderSanityCheck();
   renderRuntimeConnection();
+}
+
+function clearCompanionCommandResults() {
+  runtimeState.manualReleaseTriggerState = 'IDLE';
+  runtimeState.manualReleaseTriggerResult = null;
+  runtimeState.runtimeResetState = 'IDLE';
+  runtimeState.runtimeResetResult = null;
+  runtimeState.missionClearState = 'IDLE';
+  runtimeState.missionClearResult = null;
 }
 
 function setVehicleSaveStatus(text, kind = '') {
@@ -379,6 +390,7 @@ function applyLoadedVehicles(vehicles) {
   state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
   ensureMissionsForVehicles();
   runtimeState.emergencyResult = null;
+  clearCompanionCommandResults();
 }
 
 async function loadVehicleConfigs() {
@@ -630,25 +642,10 @@ function addVehicleFromForm(event) {
 
   state.selectedVehicleId = vehicleId;
   runtimeState.emergencyResult = null;
+  clearCompanionCommandResults();
   hideVehicleForm();
   renderAll();
   saveVehicleConfigs({ silent: true });
-}
-
-function getVehicleRelationships(vehicleId) {
-  return state.relationships.filter(
-    (relationship) =>
-      relationship.trigger_vehicle_id === vehicleId ||
-      relationship.target_vehicle_id === vehicleId
-  );
-}
-
-function getWaypointRelationships(vehicleId, waypointSeq) {
-  return state.relationships.filter(
-    (relationship) =>
-      relationship.trigger_vehicle_id === vehicleId &&
-      Number(relationship.trigger_waypoint_id) === Number(waypointSeq)
-  );
 }
 
 function deleteSelectedVehicle() {
@@ -658,12 +655,6 @@ function deleteSelectedVehicle() {
   const children = getChildVehicles(vehicle.vehicle_id);
   if (children.length > 0) {
     alert(`${vehicle.name} 아래에 child vehicle이 있어 삭제할 수 없습니다.`);
-    return;
-  }
-
-  const relationships = getVehicleRelationships(vehicle.vehicle_id);
-  if (relationships.length > 0) {
-    alert(`${vehicle.name}에 연결된 relationship이 있어 삭제할 수 없습니다.`);
     return;
   }
 
@@ -682,6 +673,7 @@ function deleteSelectedVehicle() {
   );
   state.selectedVehicleId = state.vehicles[0].vehicle_id;
   runtimeState.emergencyResult = null;
+  clearCompanionCommandResults();
   hideVehicleForm();
   renderAll();
   saveVehicleConfigs({ silent: true });
@@ -718,6 +710,7 @@ function renderVehicleTree(list, vehicle, depth) {
   card.onclick = () => {
     if (state.selectedVehicleId !== vehicle.vehicle_id) {
       runtimeState.emergencyResult = null;
+      clearCompanionCommandResults();
     }
     state.selectedVehicleId = vehicle.vehicle_id;
     renderAll();
@@ -887,6 +880,7 @@ function renderEmergencyControls() {
   const actionSelect = document.getElementById('emergencyActionSelect');
   const executeButton = document.getElementById('executeEmergencyBtn');
   const resultBox = document.getElementById('emergencyResult');
+  if (!actionSelect || !executeButton || !resultBox) return;
 
   actionSelect.disabled = !vehicle || runtimeState.emergencyInFlight;
   executeButton.disabled =
@@ -908,6 +902,68 @@ function renderEmergencyControls() {
   resultBox.textContent = runtimeState.status === 'BACKEND ONLINE'
     ? `Ready for ${vehicle.name} (${vehicle.vehicle_id}).`
     : 'Backend must be online before executing an emergency action.';
+}
+
+function renderCompanionTestPrep() {
+  const vehicle = getSelectedVehicle();
+  const manualButton = document.getElementById('manualReleaseTriggerBtn');
+  const manualResultBox = document.getElementById('manualReleaseTriggerResult');
+  const resetButton = document.getElementById('resetRuntimeStateBtn');
+  const resetResultBox = document.getElementById('runtimeResetResult');
+  const clearButton = document.getElementById('clearFcMissionBtn');
+  const clearResultBox = document.getElementById('missionClearResult');
+  const uploadMissionButton = document.getElementById('testPrepUploadMissionBtn');
+  const uploadActionPlanButton = document.getElementById('uploadActionPlanBtn');
+  const manualTarget = vehicle ? getManualReleaseTarget(vehicle) : null;
+  const backendOnline = runtimeState.status === 'BACKEND ONLINE';
+
+  if (resetButton && resetResultBox) {
+    const isBusy = runtimeState.runtimeResetState === 'SENDING';
+    resetButton.disabled = !vehicle || !backendOnline || isBusy;
+    resetButton.textContent = isBusy ? 'Resetting...' : 'Reset Runtime State';
+    resetResultBox.textContent = formatRuntimeResetResult(vehicle);
+  }
+
+  if (clearButton && clearResultBox) {
+    const isBusy = runtimeState.missionClearState === 'SENDING';
+    clearButton.disabled = !vehicle || !backendOnline || isBusy;
+    clearButton.textContent = isBusy ? 'Clearing...' : 'Clear Mission';
+    clearResultBox.textContent = formatMissionClearResult(vehicle);
+  }
+
+  if (uploadMissionButton) {
+    uploadMissionButton.disabled = !vehicle || !backendOnline;
+  }
+
+  if (uploadActionPlanButton) {
+    uploadActionPlanButton.disabled = !vehicle || !backendOnline || isChildVehicle(vehicle);
+  }
+
+  if (manualButton && manualResultBox) {
+    const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
+    const isBusy = runtimeState.manualReleaseTriggerState === 'SENDING';
+    manualButton.disabled =
+      !vehicle ||
+      !isCarrier ||
+      !manualTarget ||
+      runtimeState.status !== 'BACKEND ONLINE' ||
+      isBusy;
+    manualButton.textContent = isBusy ? 'Release + Trigger...' : 'Release + Trigger';
+
+    if (!vehicle) {
+      manualResultBox.textContent = 'Select a Carrier before manual release trigger.';
+    } else if (!isCarrier) {
+      manualResultBox.textContent = 'Manual release trigger requires selected vehicle role=carrier.';
+    } else if (!manualTarget) {
+      manualResultBox.textContent = 'No target child found. Set a RELEASE target child or add a child vehicle.';
+    } else if (runtimeState.manualReleaseTriggerResult) {
+      manualResultBox.textContent = formatManualReleaseTriggerResult(runtimeState.manualReleaseTriggerResult);
+    } else if (runtimeState.status === 'BACKEND ONLINE') {
+      manualResultBox.textContent = `Ready: ${vehicle.vehicle_id} → ${manualTarget.vehicle_id} using AUX1 actuator release.`;
+    } else {
+      manualResultBox.textContent = 'Backend must be online before manual release trigger.';
+    }
+  }
 }
 
 function renderCompanionLinkTest() {
@@ -1153,6 +1209,430 @@ function parseEmergencyError(responseBody, fallbackAction) {
   };
 }
 
+function getManualReleaseTarget(carrierVehicle) {
+  if (!carrierVehicle || normalizeVehicleRole(carrierVehicle.role) !== 'carrier') return null;
+  const mission = getMissionByVehicleId(carrierVehicle.vehicle_id);
+  const releaseTargetId = mission?.waypoints?.find(
+    (waypoint) => waypoint.kind === 'release' && waypoint.target_vehicle_id
+  )?.target_vehicle_id;
+  if (releaseTargetId) {
+    const releaseTarget = getVehicles().find((vehicle) => vehicle.vehicle_id === releaseTargetId);
+    if (releaseTarget && normalizeVehicleRole(releaseTarget.role) === 'child') return releaseTarget;
+  }
+  return getChildVehiclesForCarrier(carrierVehicle)[0] || null;
+}
+
+function formatManualReleaseTriggerResult(result) {
+  if (!result) return 'Manual release trigger has not run.';
+  const accepted = result.accepted === true ? 'true' : 'false';
+  const ok = result.ok === true ? 'true' : 'false';
+  const rawResponse = result.result || result.response || {};
+  const actionStatus = rawResponse.action_status || result.action_status || {};
+  const lines = [
+    `State: ${runtimeState.manualReleaseTriggerState}`,
+    `accepted: ${accepted}`,
+    `ok: ${ok}`,
+    `reason: ${result.reason || result.message || '-'}`,
+    `relationship_id: ${result.relationship_id || result.result?.relationship_id || '-'}`,
+    `seq: ${result.seq || '-'}`,
+  ];
+  if (rawResponse.type || rawResponse.vehicle_id) {
+    lines.push(`response: ${rawResponse.type || '-'} / ${rawResponse.vehicle_id || '-'} / seq ${rawResponse.seq ?? '-'}`);
+  }
+  if (rawResponse.type === 'CHILD_NAV_GATE_TRIGGER_ACK') {
+    lines.push('status: Unexpected child trigger ACK received during manual release request');
+  }
+  if (actionStatus.state || actionStatus.release_result || actionStatus.trigger_result || actionStatus.ack_state) {
+    lines.push(
+      `action_status: state=${actionStatus.state || '-'}, release=${actionStatus.release_result || '-'}, trigger=${actionStatus.trigger_result || '-'}, ack=${actionStatus.ack_state || '-'}`
+    );
+  }
+  const displayStatus = getManualReleaseDisplayStatus(result);
+  if (displayStatus) {
+    lines.push(`status: ${displayStatus}`);
+  }
+  if (result.sent_to) {
+    lines.push(`sent_to: ${result.sent_to.vehicle_id || '-'} / ${result.sent_to.ip || '-'}:${result.sent_to.udp_port || '-'}`);
+  }
+  if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+    lines.push(`warnings: ${result.warnings.join(', ')}`);
+  }
+  return lines.join(' / ');
+}
+
+function getManualReleaseDisplayStatus(result) {
+  const actionStatus = result?.result?.action_status || result?.action_status || {};
+  const triggerResult = actionStatus.trigger_result;
+  const state = actionStatus.state;
+  const reason = result?.reason || result?.message || '';
+  const relationshipId = result?.relationship_id || result?.result?.relationship_id || '';
+  const carrierConnection = runtimeState.vehicleConnections[result?.vehicle_id || getSelectedVehicle()?.vehicle_id] || {};
+  const statusConfirmsForwarded = (
+    relationshipId &&
+    carrierConnection.last_trigger_relationship_id === relationshipId &&
+    carrierConnection.last_trigger_state === 'FORWARDED_TO_FC'
+  );
+
+  if (statusConfirmsForwarded || triggerResult === 'FORWARDED_TO_FC' || state === 'FORWARDED_TO_FC') {
+    return '릴리즈 명령 전송 완료 / 자드론 FC 전달 완료';
+  }
+  if (isManualReleaseIntermediateState(state) || isManualReleaseIntermediateState(triggerResult) || isManualReleaseIntermediateState(actionStatus.ack_state)) {
+    return '자드론 ACK 수신 / 최종 전달 상태 확인 중';
+  }
+  if (result?.ok === false || state === 'FAILED') {
+    return `릴리즈/트리거 실패: ${reason || state || 'unknown_error'}`;
+  }
+  if (result?.ok === true) {
+    return '릴리즈/트리거 명령 처리됨';
+  }
+  return '';
+}
+
+function isManualReleaseIntermediateState(value) {
+  return [
+    'TRIGGER_SENT_RELEASE_CLOSE_COMMAND_SENT',
+    'ACK_RECEIVED',
+    'TRIGGER_RECEIVED',
+  ].includes(value);
+}
+
+function getManualReleaseStateFromResult(responseBody) {
+  const actionStatus = responseBody?.result?.action_status || responseBody?.action_status || {};
+  if (responseBody?.reason === 'timeout') return 'TIMEOUT';
+  if (responseBody?.ok === true) return 'EXECUTED';
+  if (
+    isManualReleaseIntermediateState(actionStatus.state) ||
+    isManualReleaseIntermediateState(actionStatus.trigger_result) ||
+    isManualReleaseIntermediateState(actionStatus.ack_state)
+  ) {
+    return 'EXECUTED';
+  }
+  return 'FAILED';
+}
+
+function parseManualReleaseTriggerError(responseBody, carrierVehicle, targetVehicle, seq) {
+  const detail = responseBody?.detail && typeof responseBody.detail === 'object'
+    ? responseBody.detail
+    : responseBody;
+  return {
+    ok: false,
+    accepted: false,
+    vehicle_id: carrierVehicle?.vehicle_id || '',
+    target_vehicle_id: targetVehicle?.vehicle_id || '',
+    seq,
+    reason: detail?.reason || detail?.message || 'request_failed',
+    message: detail?.message || '',
+  };
+}
+
+function formatRuntimeResetResult(vehicle) {
+  if (!vehicle) return 'Select a vehicle and connect backend before reset.';
+  if (!runtimeState.runtimeResetResult) {
+    return runtimeState.status === 'BACKEND ONLINE'
+      ? `Ready to reset runtime state for ${vehicle.vehicle_id}.`
+      : 'Backend must be online before runtime reset.';
+  }
+
+  const result = runtimeState.runtimeResetResult;
+  if (runtimeState.runtimeResetState === 'OK') return 'Runtime state reset complete';
+  if (runtimeState.runtimeResetState === 'TIMEOUT') return 'Runtime state reset timeout';
+  if (runtimeState.runtimeResetState === 'SENDING') return 'Runtime state reset sending...';
+  return `Runtime state reset failed: ${result.reason || result.message || 'unknown_error'}`;
+}
+
+function formatMissionClearResult(vehicle) {
+  if (!vehicle) return 'Select a vehicle and connect backend before mission clear.';
+  if (!runtimeState.missionClearResult) {
+    return runtimeState.status === 'BACKEND ONLINE'
+      ? `Ready to clear FC mission for ${vehicle.vehicle_id}.`
+      : 'Backend must be online before mission clear.';
+  }
+
+  const result = runtimeState.missionClearResult;
+  if (runtimeState.missionClearState === 'OK') return 'Mission clear complete';
+  if (runtimeState.missionClearState === 'WARNING') return 'Mission clear command sent, ACK timeout';
+  if (runtimeState.missionClearState === 'TIMEOUT') return 'Mission clear timeout';
+  if (runtimeState.missionClearState === 'SENDING') return 'Mission clear sending...';
+  return `Mission clear failed: ${result.reason || result.message || 'unknown_error'}`;
+}
+
+function getCommandResultDetail(responseBody) {
+  return responseBody?.result && typeof responseBody.result === 'object'
+    ? responseBody.result
+    : responseBody?.response && typeof responseBody.response === 'object'
+      ? responseBody.response
+      : responseBody;
+}
+
+function isExpectedCommandResult(responseBody, expectedType) {
+  const detail = getCommandResultDetail(responseBody);
+  return detail?.type === expectedType;
+}
+
+function getRuntimeResetStateFromResult(responseBody) {
+  if (responseBody?.reason === 'timeout') return 'TIMEOUT';
+  if (
+    isExpectedCommandResult(responseBody, 'RUNTIME_STATE_RESET_RESULT') &&
+    responseBody?.accepted === true &&
+    responseBody?.ok === true
+  ) {
+    return 'OK';
+  }
+  return 'FAILED';
+}
+
+function getMissionClearStateFromResult(responseBody) {
+  const detail = getCommandResultDetail(responseBody);
+  const reason = responseBody?.reason || detail?.reason || '';
+  if (responseBody?.reason === 'timeout') return 'TIMEOUT';
+  if (
+    isExpectedCommandResult(responseBody, 'MISSION_CLEAR_RESULT') &&
+    responseBody?.ok === true &&
+    reason === 'clear_sent_ack_timeout'
+  ) {
+    return 'WARNING';
+  }
+  if (
+    isExpectedCommandResult(responseBody, 'MISSION_CLEAR_RESULT') &&
+    responseBody?.accepted === true &&
+    responseBody?.ok === true
+  ) {
+    return 'OK';
+  }
+  return 'FAILED';
+}
+
+async function postDroneCommand(path, body) {
+  const response = await fetch(`${runtimeState.backendUrl}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify(body),
+  });
+  const responseBody = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = responseBody?.detail && typeof responseBody.detail === 'object'
+      ? responseBody.detail
+      : responseBody;
+    return {
+      ok: false,
+      accepted: false,
+      reason: detail?.reason || detail?.message || `HTTP ${response.status}`,
+      message: detail?.message || '',
+      detail,
+    };
+  }
+  return responseBody;
+}
+
+async function prepareSelectedVehicleCommand() {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) return { ok: false, reason: 'vehicle_not_selected' };
+  if (!saveConnectionForm({ persist: false })) return { ok: false, reason: 'invalid_connection_form' };
+  saveBackendUrl();
+  if (runtimeState.status !== 'BACKEND ONLINE') return { ok: false, reason: 'backend_not_online' };
+  const saved = await saveVehicleConfigs({ silent: true });
+  if (!saved) return { ok: false, reason: 'vehicle_config_save_failed' };
+  return { ok: true, vehicle };
+}
+
+async function resetRuntimeState() {
+  const prepared = await prepareSelectedVehicleCommand();
+  const seq = Date.now();
+  if (!prepared.ok) {
+    runtimeState.runtimeResetState = 'FAILED';
+    runtimeState.runtimeResetResult = { ok: false, accepted: false, reason: prepared.reason, seq };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const vehicle = prepared.vehicle;
+  runtimeState.runtimeResetState = 'SENDING';
+  runtimeState.runtimeResetResult = { ok: false, accepted: false, reason: 'sending', seq };
+  renderCompanionTestPrep();
+
+  try {
+    const responseBody = await postDroneCommand('/api/drone/runtime-reset', {
+      vehicle_id: vehicle.vehicle_id,
+      scope: 'all_runtime',
+      reset_trigger_dedupe: true,
+      reset_rc_latch: false,
+      seq,
+    });
+    runtimeState.runtimeResetResult = responseBody;
+    runtimeState.runtimeResetState = getRuntimeResetStateFromResult(responseBody);
+    if (runtimeState.runtimeResetState === 'OK') {
+      await refreshDroneConnections({ silent: true });
+    }
+  } catch (error) {
+    runtimeState.runtimeResetState = 'FAILED';
+    runtimeState.runtimeResetResult = {
+      ok: false,
+      accepted: false,
+      reason: 'request_failed',
+      message: error.message,
+      seq,
+    };
+  } finally {
+    renderCompanionTestPrep();
+    renderRuntimeConnection();
+  }
+}
+
+async function clearFcMission() {
+  const prepared = await prepareSelectedVehicleCommand();
+  const seq = Date.now();
+  if (!prepared.ok) {
+    runtimeState.missionClearState = 'FAILED';
+    runtimeState.missionClearResult = { ok: false, accepted: false, reason: prepared.reason, seq };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const vehicle = prepared.vehicle;
+  runtimeState.missionClearState = 'SENDING';
+  runtimeState.missionClearResult = { ok: false, accepted: false, reason: 'sending', seq };
+  renderCompanionTestPrep();
+
+  try {
+    const responseBody = await postDroneCommand('/api/drone/mission-clear', {
+      vehicle_id: vehicle.vehicle_id,
+      seq,
+    });
+    runtimeState.missionClearResult = responseBody;
+    runtimeState.missionClearState = getMissionClearStateFromResult(responseBody);
+    if (['OK', 'WARNING'].includes(runtimeState.missionClearState)) {
+      await refreshDroneConnections({ silent: true });
+    }
+  } catch (error) {
+    runtimeState.missionClearState = 'FAILED';
+    runtimeState.missionClearResult = {
+      ok: false,
+      accepted: false,
+      reason: 'request_failed',
+      message: error.message,
+      seq,
+    };
+  } finally {
+    renderCompanionTestPrep();
+    renderRuntimeConnection();
+  }
+}
+
+async function executeManualReleaseTrigger() {
+  const carrierVehicle = getSelectedVehicle();
+  const targetVehicle = carrierVehicle ? getManualReleaseTarget(carrierVehicle) : null;
+  const seq = Date.now();
+
+  if (!carrierVehicle || normalizeVehicleRole(carrierVehicle.role) !== 'carrier' || !targetVehicle) {
+    runtimeState.manualReleaseTriggerState = 'FAILED';
+    runtimeState.manualReleaseTriggerResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: carrierVehicle?.vehicle_id || '',
+      target_vehicle_id: targetVehicle?.vehicle_id || '',
+      seq,
+      reason: !carrierVehicle
+        ? 'carrier_not_selected'
+        : normalizeVehicleRole(carrierVehicle.role) !== 'carrier'
+          ? 'selected_vehicle_not_carrier'
+          : 'target_child_not_found',
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  if (!saveConnectionForm({ persist: false })) return;
+  saveBackendUrl();
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    runtimeState.manualReleaseTriggerState = 'FAILED';
+    runtimeState.manualReleaseTriggerResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: carrierVehicle.vehicle_id,
+      target_vehicle_id: targetVehicle.vehicle_id,
+      seq,
+      reason: 'backend_not_online',
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const saved = await saveVehicleConfigs({ silent: true });
+  if (!saved) {
+    runtimeState.manualReleaseTriggerState = 'FAILED';
+    runtimeState.manualReleaseTriggerResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: carrierVehicle.vehicle_id,
+      target_vehicle_id: targetVehicle.vehicle_id,
+      seq,
+      reason: 'vehicle_config_save_failed',
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  runtimeState.manualReleaseTriggerState = 'SENDING';
+  runtimeState.manualReleaseTriggerResult = {
+    ok: false,
+    accepted: false,
+    vehicle_id: carrierVehicle.vehicle_id,
+    target_vehicle_id: targetVehicle.vehicle_id,
+    seq,
+    reason: 'sending',
+  };
+  renderCompanionTestPrep();
+
+  try {
+    const response = await fetch(
+      `${runtimeState.backendUrl}/api/drones/${encodeURIComponent(carrierVehicle.vehicle_id)}/manual-release-trigger`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          seq,
+          target_vehicle_id: targetVehicle.vehicle_id,
+        }),
+      }
+    );
+    const responseBody = await response.json().catch(() => null);
+    if (!response.ok) {
+      runtimeState.manualReleaseTriggerResult = parseManualReleaseTriggerError(
+        responseBody,
+        carrierVehicle,
+        targetVehicle,
+        seq
+      );
+      runtimeState.manualReleaseTriggerState =
+        runtimeState.manualReleaseTriggerResult.reason === 'timeout' ? 'TIMEOUT' : 'FAILED';
+      return;
+    }
+
+    runtimeState.manualReleaseTriggerResult = responseBody;
+    const manualResponse = responseBody?.result || responseBody?.response || responseBody;
+    if (manualResponse?.type === 'MANUAL_RELEASE_TRIGGER_RESULT') {
+      markRuntimeSeen(carrierVehicle.vehicle_id, manualResponse);
+    }
+    runtimeState.manualReleaseTriggerState = getManualReleaseStateFromResult(responseBody);
+  } catch (error) {
+    runtimeState.manualReleaseTriggerState = 'FAILED';
+    runtimeState.manualReleaseTriggerResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: carrierVehicle.vehicle_id,
+      target_vehicle_id: targetVehicle.vehicle_id,
+      seq,
+      reason: 'request_failed',
+      message: error.message,
+    };
+  } finally {
+    renderCompanionTestPrep();
+    renderRuntimeConnection();
+  }
+}
+
 async function executeEmergencyAction() {
   const vehicle = getSelectedVehicle();
   if (!vehicle) {
@@ -1261,6 +1741,25 @@ function applyEmergencyResultToConnection(vehicleId, result) {
   };
 }
 
+function markRuntimeSeen(vehicleId, response = {}) {
+  if (!vehicleId) return;
+  const now = Date.now();
+  const current = runtimeState.vehicleConnections[vehicleId] || {};
+  const health = response?.health && typeof response.health === 'object' ? response.health : {};
+  const responseType = response?.type || current.last_status_type || null;
+  runtimeState.vehicleConnections[vehicleId] = {
+    ...current,
+    vehicle_id: vehicleId,
+    last_seen_ms: now,
+    last_contact_ms: now,
+    last_status_type: responseType,
+    companion_alive: health.companion_alive ?? current.companion_alive ?? null,
+    fc_connected: health.fc_connected !== undefined
+      ? normalizeRuntimeFcState(health.fc_connected)
+      : current.fc_connected,
+  };
+}
+
 function normalizeBackendUrl(value) {
   return value.trim().replace(/\/+$/, '');
 }
@@ -1277,6 +1776,7 @@ function saveBackendUrl() {
   }
   renderRuntimeConnection();
   renderEmergencyControls();
+  renderCompanionTestPrep();
   renderCompanionLinkTest();
 }
 
@@ -1285,6 +1785,7 @@ function setRuntimeStatus(status, message = '') {
   runtimeState.message = message || runtimeState.message;
   renderRuntimeConnection();
   renderEmergencyControls();
+  renderCompanionTestPrep();
   renderCompanionLinkTest();
 }
 
@@ -1395,6 +1896,9 @@ function markVehiclesConnecting() {
       companion_state: 'CONNECTING',
       fc_connected: 'UNKNOWN',
       last_seen_ms: null,
+      last_contact_ms: null,
+      last_status_type: null,
+      companion_alive: null,
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
@@ -1434,6 +1938,9 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     companion_state: existing.companion_state || 'UNKNOWN',
     fc_connected: existing.fc_connected || 'UNKNOWN',
     last_seen_ms: existing.last_seen_ms ?? null,
+    last_contact_ms: existing.last_contact_ms ?? null,
+    last_status_type: existing.last_status_type ?? null,
+    companion_alive: existing.companion_alive ?? null,
     last_fc_heartbeat_ms: existing.last_fc_heartbeat_ms ?? null,
     position: existing.position ?? null,
     gps: existing.gps ?? null,
@@ -1445,6 +1952,8 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     last_trigger_relationship_id: existing.last_trigger_relationship_id ?? null,
     last_trigger_target_vehicle_id: existing.last_trigger_target_vehicle_id ?? null,
     last_trigger_completed_ms: existing.last_trigger_completed_ms ?? null,
+    last_ack_ms: existing.last_ack_ms ?? null,
+    last_status_ms: existing.last_status_ms ?? null,
     rc_trigger_channel: existing.rc_trigger_channel ?? null,
     rc_trigger_threshold: existing.rc_trigger_threshold ?? null,
     rc_trigger_active: existing.rc_trigger_active ?? null,
@@ -1460,8 +1969,69 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
   };
 }
 
+function isKnownRuntimeConnectionState(value) {
+  return ['UNKNOWN', 'CONNECTING', 'CONNECTED', 'OFFLINE', 'ERROR', 'DISCONNECTED'].includes(value);
+}
+
+function normalizeRuntimeConnectionState(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return isKnownRuntimeConnectionState(normalized) ? normalized : '';
+}
+
+function normalizeRuntimeFcState(value, fallback = 'UNKNOWN') {
+  if (value === true) return 'CONNECTED';
+  if (value === false) return 'DISCONNECTED';
+  return normalizeRuntimeConnectionState(value) || fallback || 'UNKNOWN';
+}
+
+function getDroneHealth(result) {
+  return result?.health && typeof result.health === 'object' ? result.health : {};
+}
+
+function getDroneStatusValue(result, key, fallback = undefined) {
+  const health = getDroneHealth(result);
+  return result?.[key] ?? health?.[key] ?? fallback;
+}
+
+function getDroneStatusType(result, existing = {}) {
+  return result?.type || result?.response?.type || result?.status_type || existing.last_status_type || null;
+}
+
+function getCompanionConnectionState(result, existing = {}) {
+  const statusType = getDroneStatusType(result, existing);
+  const companionAlive = getDroneStatusValue(result, 'companion_alive', existing.companion_alive ?? null);
+  if (statusType === 'STATUS' && companionAlive === true) return 'CONNECTED';
+  if (statusType === 'STATUS' && companionAlive === false) return 'OFFLINE';
+
+  return (
+    normalizeRuntimeConnectionState(result?.companion_state) ||
+    normalizeRuntimeConnectionState(result?.connection_state) ||
+    normalizeRuntimeConnectionState(existing.companion_state) ||
+    normalizeRuntimeConnectionState(existing.connection_state) ||
+    'UNKNOWN'
+  );
+}
+
 function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
   const vehicle = getVehicles().find((item) => item.vehicle_id === vehicleId);
+  const statusType = getDroneStatusType(result, existing);
+  const companionAlive = getDroneStatusValue(result, 'companion_alive', existing.companion_alive ?? null);
+  const companionState = getCompanionConnectionState(result, existing);
+  const now = Date.now();
+  const hasStatusContact = statusType === 'STATUS' && companionAlive === true;
+  const lastSeenMs = getDroneStatusValue(
+    result,
+    'last_seen_ms',
+    hasStatusContact ? now : existing.last_seen_ms ?? null
+  );
+  const connectionState = companionState === 'CONNECTED'
+    ? 'CONNECTED'
+    : normalizeRuntimeConnectionState(result?.connection_state) ||
+      (companionState === 'DISCONNECTED' ? 'OFFLINE' : companionState);
+  const fcConnected = normalizeRuntimeFcState(
+    getDroneStatusValue(result, 'fc_connected'),
+    existing.fc_connected || 'UNKNOWN'
+  );
   return {
     ...existing,
     vehicle_id: vehicleId,
@@ -1470,31 +2040,36 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     ip: vehicle?.ip || result?.ip || existing.ip || '',
     udp_port: vehicle?.udp_port || result?.udp_port || existing.udp_port || '',
     firmware_profile: vehicle?.firmware_profile || result?.firmware_profile || existing.firmware_profile || '',
-    connection_state: result?.connection_state || result?.status || existing.connection_state || 'UNKNOWN',
-    companion_state: result?.companion_state || result?.status || existing.companion_state || 'UNKNOWN',
-    fc_connected: result?.fc_connected || existing.fc_connected || 'UNKNOWN',
-    last_seen_ms: result?.last_seen_ms ?? existing.last_seen_ms ?? null,
-    last_fc_heartbeat_ms: result?.last_fc_heartbeat_ms ?? existing.last_fc_heartbeat_ms ?? null,
-    position: result?.position ?? existing.position ?? null,
-    gps: result?.gps ?? existing.gps ?? null,
-    release_state: result?.release_state ?? existing.release_state ?? null,
-    trigger_state: result?.trigger_state || existing.trigger_state || 'UNKNOWN',
-    last_trigger_seq: result?.last_trigger_seq ?? existing.last_trigger_seq ?? null,
-    last_trigger_state: result?.last_trigger_state || existing.last_trigger_state || 'UNKNOWN',
-    last_trigger_reason: result?.last_trigger_reason ?? existing.last_trigger_reason ?? null,
-    last_trigger_relationship_id: result?.last_trigger_relationship_id ?? existing.last_trigger_relationship_id ?? null,
-    last_trigger_target_vehicle_id: result?.last_trigger_target_vehicle_id ?? existing.last_trigger_target_vehicle_id ?? null,
-    last_trigger_completed_ms: result?.last_trigger_completed_ms ?? existing.last_trigger_completed_ms ?? null,
-    rc_trigger_channel: result?.rc_trigger_channel ?? existing.rc_trigger_channel ?? null,
-    rc_trigger_threshold: result?.rc_trigger_threshold ?? existing.rc_trigger_threshold ?? null,
-    rc_trigger_active: result?.rc_trigger_active ?? existing.rc_trigger_active ?? null,
-    rc_trigger_latched: result?.rc_trigger_latched ?? existing.rc_trigger_latched ?? null,
-    emergency: result?.emergency ?? existing.emergency ?? null,
-    last_emergency_action: result?.last_emergency_action ?? result?.emergency?.last_action ?? existing.last_emergency_action ?? null,
-    last_emergency_result: result?.last_emergency_result ?? result?.emergency?.last_result ?? existing.last_emergency_result ?? null,
-    last_emergency_reason: result?.last_emergency_reason ?? result?.emergency?.last_reason ?? existing.last_emergency_reason ?? null,
-    last_emergency_seq: result?.last_emergency_seq ?? result?.emergency?.last_seq ?? existing.last_emergency_seq ?? null,
-    last_emergency_command_ms: result?.last_emergency_command_ms ?? result?.emergency?.last_command_ms ?? existing.last_emergency_command_ms ?? null,
+    connection_state: connectionState,
+    companion_state: companionState,
+    fc_connected: fcConnected,
+    last_seen_ms: lastSeenMs,
+    last_contact_ms: result ? now : existing.last_contact_ms ?? null,
+    last_status_type: statusType,
+    companion_alive: companionAlive,
+    last_fc_heartbeat_ms: getDroneStatusValue(result, 'last_fc_heartbeat_ms', existing.last_fc_heartbeat_ms ?? null),
+    position: getDroneStatusValue(result, 'position', existing.position ?? null),
+    gps: getDroneStatusValue(result, 'gps', existing.gps ?? null),
+    release_state: getDroneStatusValue(result, 'release_state', existing.release_state ?? null),
+    trigger_state: getDroneStatusValue(result, 'trigger_state', existing.trigger_state || 'UNKNOWN'),
+    last_trigger_seq: getDroneStatusValue(result, 'last_trigger_seq', existing.last_trigger_seq ?? null),
+    last_trigger_state: getDroneStatusValue(result, 'last_trigger_state', existing.last_trigger_state || 'UNKNOWN'),
+    last_trigger_reason: getDroneStatusValue(result, 'last_trigger_reason', existing.last_trigger_reason ?? null),
+    last_trigger_relationship_id: getDroneStatusValue(result, 'last_trigger_relationship_id', existing.last_trigger_relationship_id ?? null),
+    last_trigger_target_vehicle_id: getDroneStatusValue(result, 'last_trigger_target_vehicle_id', existing.last_trigger_target_vehicle_id ?? null),
+    last_trigger_completed_ms: getDroneStatusValue(result, 'last_trigger_completed_ms', existing.last_trigger_completed_ms ?? null),
+    last_ack_ms: getDroneStatusValue(result, 'last_ack_ms', existing.last_ack_ms ?? null),
+    last_status_ms: getDroneStatusValue(result, 'last_status_ms', existing.last_status_ms ?? null),
+    rc_trigger_channel: getDroneStatusValue(result, 'rc_trigger_channel', existing.rc_trigger_channel ?? null),
+    rc_trigger_threshold: getDroneStatusValue(result, 'rc_trigger_threshold', existing.rc_trigger_threshold ?? null),
+    rc_trigger_active: getDroneStatusValue(result, 'rc_trigger_active', existing.rc_trigger_active ?? null),
+    rc_trigger_latched: getDroneStatusValue(result, 'rc_trigger_latched', existing.rc_trigger_latched ?? null),
+    emergency: getDroneStatusValue(result, 'emergency', existing.emergency ?? null),
+    last_emergency_action: getDroneStatusValue(result, 'last_emergency_action', result?.emergency?.last_action ?? existing.last_emergency_action ?? null),
+    last_emergency_result: getDroneStatusValue(result, 'last_emergency_result', result?.emergency?.last_result ?? existing.last_emergency_result ?? null),
+    last_emergency_reason: getDroneStatusValue(result, 'last_emergency_reason', result?.emergency?.last_reason ?? existing.last_emergency_reason ?? null),
+    last_emergency_seq: getDroneStatusValue(result, 'last_emergency_seq', result?.emergency?.last_seq ?? existing.last_emergency_seq ?? null),
+    last_emergency_command_ms: getDroneStatusValue(result, 'last_emergency_command_ms', result?.emergency?.last_command_ms ?? existing.last_emergency_command_ms ?? null),
     reason: result?.reason || existing.reason || '',
     message: result?.message || existing.message || '',
     seq: result?.seq ?? existing.seq,
@@ -1506,10 +2081,7 @@ function getDroneConnectionSummary(connections = runtimeState.vehicleConnections
   const vehicles = getVehicles();
   const connectedCount = vehicles.filter((vehicle) => {
     const connection = connections[vehicle.vehicle_id];
-    return (
-      connection?.companion_state === 'CONNECTED' ||
-      connection?.connection_state === 'CONNECTED'
-    );
+    return getDisplayedCompanionState(connection) === 'CONNECTED';
   }).length;
   return {
     connectedCount,
@@ -1539,6 +2111,8 @@ function applyDroneStatusResults(results) {
   runtimeState.vehicleConnections = nextConnections;
   updateLiveDroneMarkers(nextConnections);
   renderMissionSummary();
+  renderEmergencyControls();
+  renderCompanionTestPrep();
 }
 
 function normalizeDroneStatusResponse(responseBody) {
@@ -1709,6 +2283,9 @@ function getVehicleConnection(vehicle) {
     companion_state: 'UNKNOWN',
     fc_connected: 'UNKNOWN',
     last_seen_ms: null,
+    last_contact_ms: null,
+    last_status_type: null,
+    companion_alive: null,
     last_fc_heartbeat_ms: null,
     position: null,
     gps: null,
@@ -1733,6 +2310,40 @@ function getVehicleConnection(vehicle) {
     reason: '',
     message: '',
   };
+}
+
+function getDisplayedCompanionState(connection) {
+  if (connection?.last_status_type === 'STATUS' && connection.companion_alive === true) {
+    return 'CONNECTED';
+  }
+  if (connection?.last_status_type === 'STATUS' && connection.companion_alive === false) {
+    return 'OFFLINE';
+  }
+  return connection?.companion_state || connection?.connection_state || 'UNKNOWN';
+}
+
+function getDisplayedFcState(connection) {
+  return connection?.fc_connected || 'UNKNOWN';
+}
+
+function debugRuntimeConnectionCard(vehicle, connection, displayedCompanionState, displayedFcState) {
+  if (!vehicle || normalizeVehicleRole(vehicle.role) !== 'carrier') return;
+  const lastSeen = connection.last_seen_ms || connection.last_contact_ms || null;
+  console.debug('[runtime connection carrier]', {
+    vehicleId: vehicle.vehicle_id,
+    displayedConnected: displayedCompanionState === 'CONNECTED',
+    displayedCompanionState,
+    displayedFcState,
+    statusType: connection.last_status_type,
+    companionAlive: connection.companion_alive,
+    fcConnected: connection.fc_connected,
+    lastSeen,
+    ageMs: lastSeen ? Date.now() - lastSeen : null,
+    manualReleaseState: runtimeState.manualReleaseTriggerState,
+    reason: connection.reason,
+    connectionState: connection.connection_state,
+    companionState: connection.companion_state,
+  });
 }
 
 function isCarrierConnection(connection, vehicle) {
@@ -1791,8 +2402,9 @@ function renderRuntimeConnection() {
 
   for (const vehicle of getVehicles()) {
     const connection = getVehicleConnection(vehicle);
-    const companionState = connection.companion_state || connection.connection_state || 'UNKNOWN';
-    const fcState = connection.fc_connected || 'UNKNOWN';
+    const companionState = getDisplayedCompanionState(connection);
+    const fcState = getDisplayedFcState(connection);
+    debugRuntimeConnectionCard(vehicle, connection, companionState, fcState);
     const statusClassName = {
       UNKNOWN: 'is-unknown',
       CONNECTING: 'is-connecting',
@@ -1824,7 +2436,7 @@ function renderRuntimeConnection() {
     if (isCarrierConnection(connection, vehicle)) {
       detailLines.push(
         ['RC trigger condition', formatRcTriggerCondition(connection)],
-        ['Release Input', connection.release_state || 'UNKNOWN'],
+        ['Release Input', formatReleaseInputState(connection.release_state)],
         ['RC Latched', formatRuntimeValue(connection.rc_trigger_latched)],
         ['Carrier Trigger', connection.trigger_state || 'UNKNOWN'],
         ['Child Delivery Result', connection.last_trigger_state || 'UNKNOWN'],
@@ -1928,8 +2540,7 @@ function ensureReleaseDefaults(waypoint, vehicle) {
   waypoint.action = 'RELEASE';
   waypoint.target_vehicle_id = waypoint.target_vehicle_id || getDefaultTargetChildId(vehicle);
   waypoint.release = {
-    ...DEFAULT_RELEASE_SERVO,
-    ...(waypoint.release || {}),
+    ...DEFAULT_RELEASE_ACTUATOR,
   };
   waypoint.trigger = {
     ...DEFAULT_RELEASE_TRIGGER,
@@ -2007,10 +2618,7 @@ function buildCarrierActionPlanPayload(mission, vehicle) {
   const vehiclesById = new Map(getVehicles().map((item) => [item.vehicle_id, item]));
   const actions = getReleaseWaypoints(mission, vehicle).map((waypoint) => {
     const target = vehiclesById.get(waypoint.target_vehicle_id);
-    const release = {
-      ...DEFAULT_RELEASE_SERVO,
-      ...(waypoint.release || {}),
-    };
+    const release = { ...DEFAULT_RELEASE_ACTUATOR };
     const trigger = {
       ...DEFAULT_RELEASE_TRIGGER,
       ...(waypoint.trigger || {}),
@@ -2079,11 +2687,13 @@ function validateCarrierActionPlan(mission, vehicle) {
     if (!waypoint.release) warnings.push(`WP${waypoint.seq}: release actuator 설정이 없습니다.`);
     if (!waypoint.trigger) warnings.push(`WP${waypoint.seq}: child trigger 설정이 없습니다.`);
     if (
-      Number(release.servo_channel) === DEFAULT_RELEASE_SERVO.servo_channel &&
-      Number(release.pwm) === DEFAULT_RELEASE_SERVO.pwm &&
-      Number(release.hold_ms) === DEFAULT_RELEASE_SERVO.hold_ms
+      release.method !== DEFAULT_RELEASE_ACTUATOR.method ||
+      Number(release.actuator_index) !== DEFAULT_RELEASE_ACTUATOR.actuator_index ||
+      Number(release.value) !== DEFAULT_RELEASE_ACTUATOR.value ||
+      Number(release.hold_ms) !== DEFAULT_RELEASE_ACTUATOR.hold_ms ||
+      Number(release.reset_value) !== DEFAULT_RELEASE_ACTUATOR.reset_value
     ) {
-      warnings.push(`WP${waypoint.seq}: release servo 설정이 기본값입니다.`);
+      warnings.push(`WP${waypoint.seq}: release actuator 설정이 검증된 AUX1 기본값과 다릅니다.`);
     }
     if (Number(waypoint.alt) < 5) {
       warnings.push(`WP${waypoint.seq}: release altitude가 낮습니다.`);
@@ -2184,23 +2794,7 @@ function deleteWaypoint(index) {
   const m = getSelectedMission();
   if (!m) return;
 
-  const waypoint = m.waypoints[index];
-  const relationships = getWaypointRelationships(m.vehicle_id, waypoint.seq);
-
-  if (relationships.length > 0) {
-    alert(`WP${waypoint.seq}를 trigger로 사용하는 relationship이 있어 삭제할 수 없습니다.`);
-    return;
-  }
-
   m.waypoints.splice(index, 1);
-  for (const relationship of state.relationships) {
-    if (
-      relationship.trigger_vehicle_id === m.vehicle_id &&
-      Number(relationship.trigger_waypoint_id) > waypoint.seq
-    ) {
-      relationship.trigger_waypoint_id = Number(relationship.trigger_waypoint_id) - 1;
-    }
-  }
   resequence(m);
   clearMissionResultLog();
   renderAll();
@@ -2212,14 +2806,6 @@ function clearSelectedMission() {
   if (!vehicle || !mission) return;
 
   if (mission.waypoints.length === 0) return;
-
-  const relationships = state.relationships.filter(
-    (relationship) => relationship.trigger_vehicle_id === vehicle.vehicle_id
-  );
-  if (relationships.length > 0) {
-    alert(`${vehicle.name} waypoint를 trigger로 사용하는 relationship이 있어 삭제할 수 없습니다.`);
-    return;
-  }
 
   if (confirm(`${vehicle.name} waypoint를 모두 삭제할까요?`)) {
     mission.waypoints = [];
@@ -2282,7 +2868,7 @@ function renderWaypointRows() {
       actionCell.appendChild(stepSelect);
 
       if (wp.kind === 'release') {
-        const release = wp.release || DEFAULT_RELEASE_SERVO;
+        const release = wp.release || DEFAULT_RELEASE_ACTUATOR;
         const target = getVehicles().find((item) => item.vehicle_id === wp.target_vehicle_id);
         const details = document.createElement('div');
         details.className = 'release-controls';
@@ -2296,12 +2882,10 @@ function renderWaypointRows() {
               </option>
             `).join('')}
           </select>
-          <div class="release-grid">
-            <div><label>Servo CH</label><input type="number" min="1" max="16" step="1" value="${escapeHtml(release.servo_channel ?? '')}" data-field="servo_channel" data-idx="${idx}" /></div>
-            <div><label>PWM</label><input type="number" min="800" max="2200" step="1" value="${escapeHtml(release.pwm ?? '')}" data-field="pwm" data-idx="${idx}" /></div>
-            <div><label>Hold ms</label><input type="number" min="0" step="50" value="${escapeHtml(release.hold_ms ?? '')}" data-field="hold_ms" data-idx="${idx}" /></div>
+          <div class="release-actuator-summary">
+            Release: ${escapeHtml(release.method)} · Actuator ${escapeHtml(release.actuator_index)} · open ${escapeHtml(release.value)} · hold ${escapeHtml(release.hold_ms)}ms · reset ${escapeHtml(release.reset_value)}
           </div>
-          <div class="hint">FC export: NAV_WAYPOINT/16 · Trigger: ${escapeHtml(wp.trigger?.type || DEFAULT_RELEASE_TRIGGER.type)}${target ? ` · ${escapeHtml(target.ip || '-')}:${escapeHtml(target.udp_port || '-')}` : ''}</div>
+          <div class="hint">FC export: NAV_WAYPOINT/16 · AUX1 via Actuator Set 1 · Trigger: ${escapeHtml(wp.trigger?.type || DEFAULT_RELEASE_TRIGGER.type)}${target ? ` · ${escapeHtml(target.ip || '-')}:${escapeHtml(target.udp_port || '-')}` : ''}</div>
         `;
         actionCell.appendChild(details);
       } else {
@@ -2367,18 +2951,6 @@ function renderWaypointRows() {
       const idx = Number(e.target.dataset.idx);
       mission.waypoints[idx].target_vehicle_id = e.target.value;
       ensureReleaseDefaults(mission.waypoints[idx], vehicle);
-      mission.uploadState = 'Editing';
-      clearMissionResultLog();
-      renderAll();
-    });
-  });
-
-  tbody.querySelectorAll('input[data-field="servo_channel"], input[data-field="pwm"], input[data-field="hold_ms"]').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const idx = Number(e.target.dataset.idx);
-      const waypoint = mission.waypoints[idx];
-      ensureReleaseDefaults(waypoint, vehicle);
-      waypoint.release[e.target.dataset.field] = Number(e.target.value);
       mission.uploadState = 'Editing';
       clearMissionResultLog();
       renderAll();
@@ -2744,7 +3316,7 @@ function buildMissionSummaryLines(mission, vehicle) {
     if (waypoint.kind === 'release') {
       const target = getVehicles().find((item) => item.vehicle_id === waypoint.target_vehicle_id);
       const release = waypoint.release || {};
-      line += ` / target: ${waypoint.target_vehicle_id || '-'} / servo CH${release.servo_channel || '-'} PWM${release.pwm || '-'} ${release.hold_ms || '-'}ms`;
+      line += ` / target: ${waypoint.target_vehicle_id || '-'} / actuator ${release.actuator_index || '-'} open ${release.value ?? '-'} reset ${release.reset_value ?? '-'} ${release.hold_ms || '-'}ms`;
       if (target) line += ` / trigger: ${target.ip || '-'}:${target.udp_port || '-'}`;
     }
     lines.push(line);
@@ -2774,7 +3346,9 @@ function formatMissionValidationResult(validation, summaryLines = []) {
 }
 
 function formatActionPlanRows(actionPlan) {
-  const actions = actionPlan?.actions || [];
+  const actions = (actionPlan?.actions || []).filter(
+    (action) => !String(action.action_id || '').startsWith('manual_release_trigger_')
+  );
   if (!actions.length) return '';
   const rows = actions.map((action) => {
     const release = action.release || {};
@@ -2785,7 +3359,7 @@ function formatActionPlanRows(actionPlan) {
         <td>RELEASE</td>
         <td>${escapeHtml(action.target_vehicle_id || '-')}</td>
         <td>NAV_WAYPOINT/16</td>
-        <td>CH${escapeHtml(release.servo_channel ?? '-')} PWM${escapeHtml(release.pwm ?? '-')} ${escapeHtml(release.hold_ms ?? '-')}ms</td>
+        <td>Act${escapeHtml(release.actuator_index ?? '-')} open ${escapeHtml(release.value ?? '-')} reset ${escapeHtml(release.reset_value ?? '-')} ${escapeHtml(release.hold_ms ?? '-')}ms</td>
         <td>${escapeHtml(trigger.target_ip || '-')}:${escapeHtml(trigger.target_port || '-')}</td>
         <td>${action.target_vehicle_id ? 'OK' : 'Missing target'}</td>
       </tr>
@@ -2796,7 +3370,7 @@ function formatActionPlanRows(actionPlan) {
     <div class="hint" style="margin-top:10px;">Carrier ACTION_PLAN_UPLOAD dry-run</div>
     <table class="mission-result-table">
       <thead>
-        <tr><th>Seq</th><th>Step Type</th><th>Target Child</th><th>FC Export Command</th><th>Servo</th><th>Trigger Target</th><th>Validation</th></tr>
+        <tr><th>Seq</th><th>Step Type</th><th>Target Child</th><th>FC Export Command</th><th>Release</th><th>Trigger Target</th><th>Validation</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -2869,267 +3443,6 @@ function renderMissionSummary() {
     ) + getSelectedActionPlanHtml();
   } else if (validationBox) {
     validationBox.textContent = 'No vehicle selected.';
-  }
-}
-
-function generateRelationshipId() {
-  let index = state.relationships.length + 1;
-  let relationshipId = `relationship_${String(index).padStart(2, '0')}`;
-
-  while (
-    state.relationships.some(
-      (relationship) => relationship.relationship_id === relationshipId
-    )
-  ) {
-    index += 1;
-    relationshipId = `relationship_${String(index).padStart(2, '0')}`;
-  }
-
-  return relationshipId;
-}
-
-function getNextRelationshipOrder(triggerVehicleId, triggerWaypointId, relationships = state.relationships) {
-  const orders = relationships
-    .filter(
-      (relationship) =>
-        relationship.trigger_vehicle_id === triggerVehicleId &&
-        Number(relationship.trigger_waypoint_id) === Number(triggerWaypointId)
-    )
-    .map((relationship) => Number(relationship.order))
-    .filter(Number.isInteger);
-
-  return orders.length ? Math.max(...orders) + 1 : 1;
-}
-
-function requiresReleaseBeforeStart(targetVehicle) {
-  return (
-    normalizeVehicleRole(targetVehicle.role) === 'child' ||
-    targetVehicle.firmware_profile === 'px4_nav_ready_gate'
-  );
-}
-
-// Gate START_MISSION means a Navigation Ready Gate trigger, not direct AUTO_MISSION entry.
-function hasPriorRelease(relationships, candidate) {
-  return relationships.some(
-    (relationship) =>
-      relationship.trigger_vehicle_id === candidate.trigger_vehicle_id &&
-      relationship.target_vehicle_id === candidate.target_vehicle_id &&
-      relationship.action_type === 'RELEASE' &&
-      (
-        Number(relationship.trigger_waypoint_id) <
-          Number(candidate.trigger_waypoint_id) ||
-        (
-          Number(relationship.trigger_waypoint_id) ===
-            Number(candidate.trigger_waypoint_id) &&
-          Number(relationship.order) < Number(candidate.order)
-        )
-      )
-  );
-}
-
-function getStartMissionSequenceError(relationships, candidate, vehicles = getVehicles()) {
-  if (candidate.action_type !== 'START_MISSION') return null;
-
-  const targetVehicle = vehicles.find(
-    (vehicle) => vehicle.vehicle_id === candidate.target_vehicle_id
-  );
-  if (!targetVehicle || !requiresReleaseBeforeStart(targetVehicle)) return null;
-
-  if (!hasPriorRelease(relationships, candidate)) {
-    return `${targetVehicle.name} START_MISSION은 선행 RELEASE 이후에만 추가할 수 있습니다.`;
-  }
-
-  return null;
-}
-
-function renderRelationshipEditor() {
-  const mission = getSelectedMission();
-  const selectedVehicle = getSelectedVehicle();
-  const waypointSelect = document.getElementById('relationshipTriggerWaypoint');
-  const targetSelect = document.getElementById('relationshipTargetVehicle');
-  const actionSelect = document.getElementById('relationshipActionType');
-  const addButton = document.getElementById('addRelationshipBtn');
-
-  waypointSelect.innerHTML = '';
-  targetSelect.innerHTML = '';
-
-  if (!mission || !selectedVehicle) {
-    waypointSelect.disabled = true;
-    targetSelect.disabled = true;
-    actionSelect.disabled = true;
-    addButton.disabled = true;
-    return;
-  }
-
-  for (const waypoint of mission.waypoints) {
-    const option = document.createElement('option');
-    option.value = waypoint.seq;
-    option.textContent = `WP${waypoint.seq}`;
-    waypointSelect.appendChild(option);
-  }
-
-  for (const vehicle of getVehicles()) {
-    if (vehicle.vehicle_id === selectedVehicle.vehicle_id) continue;
-
-    const option = document.createElement('option');
-    option.value = vehicle.vehicle_id;
-    option.textContent = `${vehicle.name} (${vehicle.vehicle_id})`;
-    targetSelect.appendChild(option);
-  }
-
-  const canAdd = waypointSelect.options.length > 0 && targetSelect.options.length > 0;
-  waypointSelect.disabled = waypointSelect.options.length === 0;
-  targetSelect.disabled = targetSelect.options.length === 0;
-  actionSelect.disabled = !canAdd;
-  addButton.disabled = !canAdd;
-}
-
-function addRelationshipFromForm(event) {
-  event.preventDefault();
-
-  const triggerVehicle = getSelectedVehicle();
-  if (!triggerVehicle) {
-    alert('Add a vehicle before adding relationships.');
-    return;
-  }
-
-  const triggerWaypointId = Number(
-    document.getElementById('relationshipTriggerWaypoint').value
-  );
-  const targetVehicleId = document.getElementById('relationshipTargetVehicle').value;
-  const actionType = document.getElementById('relationshipActionType').value;
-  const mission = getSelectedMission();
-  if (!mission) return;
-
-  if (!mission.waypoints.some((waypoint) => waypoint.seq === triggerWaypointId)) {
-    alert('유효한 trigger waypoint를 선택하세요.');
-    return;
-  }
-
-  if (!targetVehicleId || targetVehicleId === triggerVehicle.vehicle_id) {
-    alert('다른 target vehicle을 선택하세요.');
-    return;
-  }
-
-  if (!getVehicleById(targetVehicleId)) {
-    alert('선택한 target vehicle이 존재하지 않습니다.');
-    return;
-  }
-
-  if (!RELATIONSHIP_ACTION_TYPES.includes(actionType)) {
-    alert('유효한 action type을 선택하세요.');
-    return;
-  }
-
-  const duplicate = state.relationships.some(
-    (relationship) =>
-      relationship.trigger_vehicle_id === triggerVehicle.vehicle_id &&
-      Number(relationship.trigger_waypoint_id) === triggerWaypointId &&
-      relationship.action_type === actionType &&
-      relationship.target_vehicle_id === targetVehicleId
-  );
-  if (duplicate) {
-    alert('동일한 relationship이 이미 존재합니다.');
-    return;
-  }
-
-  const relationship = {
-    relationship_id: generateRelationshipId(),
-    trigger_vehicle_id: triggerVehicle.vehicle_id,
-    trigger_waypoint_id: triggerWaypointId,
-    order: getNextRelationshipOrder(triggerVehicle.vehicle_id, triggerWaypointId),
-    action_type: actionType,
-    target_vehicle_id: targetVehicleId,
-  };
-
-  const sequenceError = getStartMissionSequenceError(
-    state.relationships,
-    relationship
-  );
-  if (sequenceError) {
-    alert(sequenceError);
-    return;
-  }
-
-  state.relationships.push(relationship);
-
-  renderAll();
-}
-
-function deleteRelationship(relationshipId) {
-  const deleted = state.relationships.find(
-    (relationship) => relationship.relationship_id === relationshipId
-  );
-  state.relationships = state.relationships.filter(
-    (relationship) => relationship.relationship_id !== relationshipId
-  );
-
-  if (deleted) {
-    state.relationships
-      .filter(
-        (relationship) =>
-          relationship.trigger_vehicle_id === deleted.trigger_vehicle_id &&
-          Number(relationship.trigger_waypoint_id) ===
-            Number(deleted.trigger_waypoint_id)
-      )
-      .sort((a, b) => Number(a.order) - Number(b.order))
-      .forEach((relationship, index) => {
-        relationship.order = index + 1;
-      });
-  }
-
-  renderAll();
-}
-
-function renderRelationshipList() {
-  const list = document.getElementById('relationshipList');
-  list.innerHTML = '';
-
-  if (state.relationships.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '등록된 relationship이 없습니다.';
-    list.appendChild(empty);
-    return;
-  }
-
-  const relationships = [...state.relationships].sort(
-    (a, b) =>
-      a.trigger_vehicle_id.localeCompare(b.trigger_vehicle_id) ||
-      Number(a.trigger_waypoint_id) - Number(b.trigger_waypoint_id) ||
-      Number(a.order) - Number(b.order)
-  );
-
-  for (const relationship of relationships) {
-    const triggerVehicle = getVehicleById(relationship.trigger_vehicle_id);
-    const targetVehicle = getVehicleById(relationship.target_vehicle_id);
-    const isNavigationReadyGate =
-      relationship.action_type === 'START_MISSION' &&
-      targetVehicle?.firmware_profile === 'px4_nav_ready_gate';
-    const card = document.createElement('div');
-    card.className = 'relationship-card';
-    card.innerHTML = `
-      <div class="relationship-card-head">
-        <div class="relationship-card-title">#${escapeHtml(relationship.order)} ${escapeHtml(relationship.action_type)}</div>
-        <button class="danger" type="button">삭제</button>
-      </div>
-      <div class="kv">
-        <span>Trigger</span>
-        <span>${escapeHtml(triggerVehicle?.name || relationship.trigger_vehicle_id)} WP${escapeHtml(relationship.trigger_waypoint_id)}</span>
-      </div>
-      <div class="kv">
-        <span>Target</span>
-        <span>${escapeHtml(targetVehicle?.name || relationship.target_vehicle_id)}</span>
-      </div>
-      ${isNavigationReadyGate
-        ? '<div class="relationship-meaning">Navigation Ready Gate trigger (AUTO_MISSION 직접 진입 아님)</div>'
-        : ''}
-    `;
-
-    card.querySelector('button').addEventListener('click', () => {
-      deleteRelationship(relationship.relationship_id);
-    });
-    list.appendChild(card);
   }
 }
 
@@ -3401,6 +3714,20 @@ async function validateSelectedMission() {
   }
 }
 
+async function uploadActionPlanDryRun() {
+  const mission = getSelectedMission();
+  const vehicle = getSelectedVehicle();
+  if (!mission || !vehicle) {
+    alert('Upload Action Plan 불가: vehicle을 먼저 선택하세요.');
+    return;
+  }
+  if (isChildVehicle(vehicle)) {
+    alert('Upload Action Plan은 Carrier vehicle에서만 사용할 수 있습니다.');
+    return;
+  }
+  await validateSelectedMission();
+}
+
 async function uploadSelectedMission() {
   const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
@@ -3597,7 +3924,6 @@ function exportPackageJson() {
     version,
     vehicles,
     missions,
-    relationships,
     qgcPlanSettings,
   } = state;
 
@@ -3605,7 +3931,6 @@ function exportPackageJson() {
     version,
     vehicles,
     missions,
-    relationships,
     qgcPlanSettings,
   });
 }
@@ -3614,6 +3939,10 @@ function normalizeImportedMissionPackage(imported) {
   const warnings = [];
 
   if (!imported || typeof imported !== 'object') return warnings;
+  if (Array.isArray(imported.relationships) && imported.relationships.length > 0) {
+    warnings.push('relationships는 더 이상 사용하지 않아 import 시 제거했습니다. RELEASE target child 설정을 사용하세요.');
+  }
+  delete imported.relationships;
 
   for (const vehicle of Array.isArray(imported.vehicles) ? imported.vehicles : []) {
     if (!vehicle.firmware_profile) {
@@ -3622,49 +3951,7 @@ function normalizeImportedMissionPackage(imported) {
     }
   }
 
-  const groups = new Map();
-  const relationships = Array.isArray(imported.relationships)
-    ? imported.relationships
-    : [];
-  relationships.forEach((relationship, index) => {
-    const key =
-      `${relationship.trigger_vehicle_id}::${relationship.trigger_waypoint_id}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ relationship, index });
-  });
-
-  for (const group of groups.values()) {
-    group.sort((a, b) => {
-      const aOrder = Number(a.relationship.order);
-      const bOrder = Number(b.relationship.order);
-      const aValid = Number.isInteger(aOrder) && aOrder > 0;
-      const bValid = Number.isInteger(bOrder) && bOrder > 0;
-
-      if (aValid && bValid && aOrder !== bOrder) return aOrder - bOrder;
-      if (aValid !== bValid) return aValid ? -1 : 1;
-      return a.index - b.index;
-    });
-
-    group.forEach(({ relationship }, index) => {
-      const normalizedOrder = index + 1;
-      if (relationship.order !== normalizedOrder) {
-        relationship.order = normalizedOrder;
-        warnings.push(
-          `${relationship.relationship_id || 'relationship'}: order를 ${normalizedOrder}(으)로 보정했습니다.`
-        );
-      }
-    });
-  }
-
   return warnings;
-}
-
-function getRelationshipSequenceErrors(relationships, vehicles) {
-  return relationships
-    .map((relationship) =>
-      getStartMissionSequenceError(relationships, relationship, vehicles)
-    )
-    .filter(Boolean);
 }
 
 function isValidMissionPackage(imported) {
@@ -3672,7 +3959,6 @@ function isValidMissionPackage(imported) {
     !imported ||
     !Array.isArray(imported.vehicles) ||
     !Array.isArray(imported.missions) ||
-    !Array.isArray(imported.relationships) ||
     !imported.qgcPlanSettings ||
     typeof imported.qgcPlanSettings !== 'object' ||
     Array.isArray(imported.qgcPlanSettings)
@@ -3711,38 +3997,6 @@ function isValidMissionPackage(imported) {
   );
   if (!missionsAreValid) return false;
 
-  const relationshipIds = new Set();
-  for (const relationship of imported.relationships) {
-    if (
-      !relationship.relationship_id ||
-      relationshipIds.has(relationship.relationship_id) ||
-      !vehicleIds.has(relationship.trigger_vehicle_id) ||
-      !vehicleIds.has(relationship.target_vehicle_id) ||
-      relationship.trigger_vehicle_id === relationship.target_vehicle_id ||
-      !RELATIONSHIP_ACTION_TYPES.includes(relationship.action_type) ||
-      !Number.isInteger(Number(relationship.order)) ||
-      Number(relationship.order) < 1
-    ) {
-      return false;
-    }
-
-    const triggerMission = imported.missions.find(
-      (mission) => mission.vehicle_id === relationship.trigger_vehicle_id
-    );
-    const triggerWaypointId = Number(relationship.trigger_waypoint_id);
-    if (
-      !Number.isInteger(triggerWaypointId) ||
-      !triggerMission ||
-      !triggerMission.waypoints.some(
-        (waypoint) => Number(waypoint.seq) === triggerWaypointId
-      )
-    ) {
-      return false;
-    }
-
-    relationshipIds.add(relationship.relationship_id);
-  }
-
   return true;
 }
 
@@ -3756,19 +4010,10 @@ function importPackageJson(e) {
       const warnings = normalizeImportedMissionPackage(imported);
       if (!isValidMissionPackage(imported)) throw new Error('mission package 형식이 아닙니다.');
 
-      const sequenceErrors = getRelationshipSequenceErrors(
-        imported.relationships,
-        imported.vehicles
-      );
-      if (sequenceErrors.length > 0) {
-        throw new Error(
-          `Navigation Ready Gate 순서 오류:\n- ${sequenceErrors.join('\n- ')}`
-        );
-      }
-
       state = imported;
       state.vehicles = state.vehicles.map(stripRuntimeFieldsFromVehicle);
       state.selectedVehicleId = state.vehicles[0]?.vehicle_id || null;
+      clearCompanionCommandResults();
       syncSettingsToForm();
       renderAll();
       saveVehicleConfigs({ silent: true });
@@ -3855,6 +4100,12 @@ function formatRuntimeTime(value) {
 
 function formatRuntimeValue(value) {
   return value === null || value === undefined || value === '' ? '-' : value;
+}
+
+function formatReleaseInputState(value) {
+  if (value === null || value === undefined || value === '') return 'UNKNOWN';
+  if (value === 'RELEASE_CONFIRMED') return 'Release command sent';
+  return value;
 }
 
 function formatRcTriggerCondition(connection) {

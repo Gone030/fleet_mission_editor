@@ -46,7 +46,7 @@ Carrier-01
 * Mission Package JSON export
 * Mission Package JSON import
 * 선택된 vehicle의 QGC `.plan` export
-* relationship editor
+* Carrier waypoint를 RELEASE step으로 지정하고 target Child 선택
 * QGC Plan 설정 편집
 * Local Runtime Backend health check 연결 패널
 * backend 자동 health monitor
@@ -232,7 +232,7 @@ fleet-mission-editor/
 4. Runtime Connection에서 backend ONLINE 확인
 5. Connect Drones 또는 자동 polling으로 companion 상태 확인
 6. 지도 클릭으로 waypoint 생성
-7. relationship 필요 시 Relationship Editor에서 추가
+7. Carrier release 지점은 waypoint 목록에서 RELEASE로 변경하고 target Child 선택
 8. 선택 vehicle의 `.plan` export
 9. QGroundControl에서 `.plan` 열기
 10. runtime 상태, live GPS marker, emergency action은 backend UI에서 확인/실행
@@ -247,7 +247,6 @@ fleet-mission-editor/
   version: 1,
   vehicles: [],
   missions: [],
-  relationships: [],
   qgcPlanSettings: {}
 }
 ```
@@ -256,7 +255,7 @@ fleet-mission-editor/
 
 `missions`는 각 드론의 mission과 waypoint를 가진다.
 
-`relationships`는 특정 vehicle의 waypoint 도착 시 다른 vehicle에 action을 걸기 위한 관계 정보를 가진다.
+Carrier → Child release/trigger 대상은 Carrier mission의 RELEASE waypoint `target_vehicle_id`에 저장된다.
 
 `qgcPlanSettings`는 QGC `.plan` export에 필요한 설정을 가진다.
 
