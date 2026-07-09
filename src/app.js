@@ -38,6 +38,8 @@ const runtimeState = {
   missionClearResult: null,
   actionPlanUploadState: 'IDLE',
   actionPlanUploadResult: null,
+  missionStartState: 'IDLE',
+  missionStartResult: null,
   vehicleSaveStatus: 'Vehicles not loaded',
   vehicleSaveStatusKind: '',
   vehicleSaveInFlight: false,
@@ -257,13 +259,15 @@ const VEHICLE_CONFIG_FIELDS = [
 ];
 
 const COLLAPSIBLE_SECTION_IDS = {
+  '선택 드론 MISSION': 'selected-drone-mission',
+  'MISSION CONTROL': 'mission-control',
   'Vehicle Connection Settings': 'vehicle-connection-settings',
   'Runtime Connection': 'runtime-connection',
-  'Companion Link Test': 'companion-link-test',
+  'DEBUG TOOLS': 'debug-tools',
   'Waypoint 목록': 'waypoint-list',
-  'Companion Test Prep': 'companion-test-prep',
+  'WAYPOINT 목록': 'waypoint-list',
+  '지도 보기': 'map-view',
   'Sanity Check': 'sanity-check',
-  'QGC Plan 설정': 'qgc-plan-settings',
 };
 
 const VEHICLE_COLORS = [
@@ -290,14 +294,19 @@ map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
 
 setupCollapsibleSections();
 
-document.getElementById('exportPackageBtn').addEventListener('click', exportPackageJson);
-document.getElementById('importPackageInput').addEventListener('change', importPackageJson);
-document.getElementById('addVehicleBtn').addEventListener('click', showVehicleForm);
-document.getElementById('deleteVehicleBtn').addEventListener('click', deleteSelectedVehicle);
-document.getElementById('vehicleForm').addEventListener('submit', addVehicleFromForm);
-document.getElementById('cancelVehicleBtn').addEventListener('click', hideVehicleForm);
-document.getElementById('vehicleRole').addEventListener('change', syncFirmwareProfileForRole);
-document.getElementById('resetBtn').addEventListener('click', () => {
+function onElement(id, eventName, handler) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(eventName, handler);
+}
+
+onElement('exportPackageBtn', 'click', exportPackageJson);
+onElement('importPackageInput', 'change', importPackageJson);
+onElement('addVehicleBtn', 'click', showVehicleForm);
+onElement('deleteVehicleBtn', 'click', deleteSelectedVehicle);
+onElement('vehicleForm', 'submit', addVehicleFromForm);
+onElement('cancelVehicleBtn', 'click', hideVehicleForm);
+onElement('vehicleRole', 'change', syncFirmwareProfileForRole);
+onElement('resetBtn', 'click', () => {
   if (confirm('모든 mission 데이터를 초기화할까요?')) {
     state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
     state.selectedVehicleId = null;
@@ -307,30 +316,30 @@ document.getElementById('resetBtn').addEventListener('click', () => {
     renderAll();
   }
 });
-document.getElementById('saveConnBtn').addEventListener('click', saveConnectionForm);
-document.getElementById('executeEmergencyBtn').addEventListener('click', executeEmergencyAction);
-document.getElementById('manualReleaseTriggerBtn').addEventListener('click', executeManualReleaseTrigger);
-document.getElementById('resetRuntimeStateBtn').addEventListener('click', resetRuntimeState);
-document.getElementById('clearFcMissionBtn').addEventListener('click', clearFcMission);
-document.getElementById('testPrepUploadMissionBtn').addEventListener('click', uploadSelectedMission);
-document.getElementById('uploadActionPlanBtn').addEventListener('click', uploadActionPlan);
-document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
-document.getElementById('refreshDroneStatusBtn').addEventListener('click', () => refreshDroneConnections());
-document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
-document.getElementById('backendUrl').addEventListener('change', saveBackendUrl);
-document.getElementById('exportQgcBtn').addEventListener('click', exportSelectedQgcPlan);
-document.getElementById('validateMissionBtn').addEventListener('click', validateSelectedMission);
-document.getElementById('uploadMissionBtn').addEventListener('click', uploadSelectedMission);
-document.getElementById('readBackMissionBtn').addEventListener('click', readBackSelectedMission);
-document.getElementById('loadFcMissionBtn').addEventListener('click', loadFcMissionToMap);
-document.getElementById('uploadVerifyMissionBtn').addEventListener('click', uploadAndVerifySelectedMission);
-document.getElementById('clearMissionBtn').addEventListener('click', clearSelectedMission);
-document.getElementById('focusSelectedBtn').addEventListener('click', focusSelectedLiveDrone);
-document.getElementById('fitLiveDronesBtn').addEventListener('click', fitLiveDroneMarkers);
-document.getElementById('runLinkTestBtn').addEventListener('click', runCompanionLinkTest);
+onElement('saveConnBtn', 'click', saveConnectionForm);
+onElement('executeEmergencyBtn', 'click', executeEmergencyAction);
+onElement('manualReleaseTriggerBtn', 'click', executeManualReleaseTrigger);
+onElement('resetRuntimeStateBtn', 'click', resetRuntimeState);
+onElement('clearFcMissionBtn', 'click', clearFcMission);
+onElement('uploadActionPlanBtn', 'click', uploadActionPlan);
+onElement('connectBackendBtn', 'click', connectBackend);
+onElement('refreshDroneStatusBtn', 'click', () => refreshDroneConnections());
+onElement('connectDronesBtn', 'click', connectDrones);
+onElement('backendUrl', 'change', saveBackendUrl);
+onElement('exportQgcBtn', 'click', exportSelectedQgcPlan);
+onElement('validateMissionBtn', 'click', validateSelectedMission);
+onElement('missionStartBtn', 'click', openMissionStartModal);
+onElement('cancelMissionStartBtn', 'click', closeMissionStartModal);
+onElement('confirmMissionStartBtn', 'click', confirmMissionStart);
+onElement('loadFcMissionBtn', 'click', loadFcMissionToMap);
+onElement('uploadVerifyMissionBtn', 'click', uploadAndVerifySelectedMission);
+onElement('clearMissionBtn', 'click', clearSelectedMission);
+onElement('focusSelectedBtn', 'click', focusSelectedLiveDrone);
+onElement('fitLiveDronesBtn', 'click', fitLiveDroneMarkers);
+onElement('runLinkTestBtn', 'click', runCompanionLinkTest);
 
 for (const id of ['firmwareType', 'vehicleType', 'hoverSpeed', 'cruiseSpeed', 'useFirstAsTakeoff']) {
-  document.getElementById(id).addEventListener('change', saveQgcSettingsFromForm);
+  onElement(id, 'change', saveQgcSettingsFromForm);
 }
 
 function renderAll() {
@@ -357,6 +366,8 @@ function clearCompanionCommandResults() {
   runtimeState.missionClearResult = null;
   runtimeState.actionPlanUploadState = 'IDLE';
   runtimeState.actionPlanUploadResult = null;
+  runtimeState.missionStartState = 'IDLE';
+  runtimeState.missionStartResult = null;
 }
 
 function setVehicleSaveStatus(text, kind = '') {
@@ -917,13 +928,13 @@ function renderEmergencyControls() {
 
 function renderCompanionTestPrep() {
   const vehicle = getSelectedVehicle();
+  const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
   const manualButton = document.getElementById('manualReleaseTriggerBtn');
   const manualResultBox = document.getElementById('manualReleaseTriggerResult');
   const resetButton = document.getElementById('resetRuntimeStateBtn');
   const resetResultBox = document.getElementById('runtimeResetResult');
   const clearButton = document.getElementById('clearFcMissionBtn');
   const clearResultBox = document.getElementById('missionClearResult');
-  const uploadMissionButton = document.getElementById('testPrepUploadMissionBtn');
   const uploadActionPlanButton = document.getElementById('uploadActionPlanBtn');
   const uploadActionPlanResultBox = document.getElementById('actionPlanUploadResult');
   const manualTarget = vehicle ? getManualReleaseTarget(vehicle) : null;
@@ -932,33 +943,30 @@ function renderCompanionTestPrep() {
   if (resetButton && resetResultBox) {
     const isBusy = runtimeState.runtimeResetState === 'SENDING';
     resetButton.disabled = !vehicle || !backendOnline || isBusy;
-    resetButton.textContent = isBusy ? 'Resetting...' : 'Reset Runtime State';
+    resetButton.textContent = isBusy ? '초기화 중...' : '런타임 상태 초기화';
     resetResultBox.textContent = formatRuntimeResetResult(vehicle);
   }
 
   if (clearButton && clearResultBox) {
     const isBusy = runtimeState.missionClearState === 'SENDING';
     clearButton.disabled = !vehicle || !backendOnline || isBusy;
-    clearButton.textContent = isBusy ? 'Clearing...' : 'Clear Mission';
+    clearButton.textContent = isBusy ? '삭제 중...' : 'FC 미션 삭제';
     clearResultBox.textContent = formatMissionClearResult(vehicle);
-  }
-
-  if (uploadMissionButton) {
-    uploadMissionButton.disabled = !vehicle || !backendOnline;
   }
 
   if (uploadActionPlanButton) {
     const isBusy = runtimeState.actionPlanUploadState === 'SENDING';
-    uploadActionPlanButton.disabled = !vehicle || !backendOnline || isChildVehicle(vehicle) || isBusy;
-    uploadActionPlanButton.textContent = isBusy ? 'Uploading Action Plan...' : 'Upload Action Plan';
+    uploadActionPlanButton.classList.toggle('hidden', Boolean(vehicle && !isCarrier));
+    uploadActionPlanButton.disabled = !vehicle || !backendOnline || !isCarrier || isBusy;
+    uploadActionPlanButton.textContent = isBusy ? '액션 플랜 업로드 중...' : '액션 플랜 업로드';
   }
 
   if (uploadActionPlanResultBox) {
+    uploadActionPlanResultBox.classList.toggle('hidden', Boolean(vehicle && !isCarrier));
     uploadActionPlanResultBox.textContent = formatActionPlanUploadResult(vehicle);
   }
 
   if (manualButton && manualResultBox) {
-    const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
     const isBusy = runtimeState.manualReleaseTriggerState === 'SENDING';
     manualButton.disabled =
       !vehicle ||
@@ -966,7 +974,7 @@ function renderCompanionTestPrep() {
       !manualTarget ||
       runtimeState.status !== 'BACKEND ONLINE' ||
       isBusy;
-    manualButton.textContent = isBusy ? 'Release + Trigger...' : 'Release + Trigger';
+    manualButton.textContent = isBusy ? '수동 릴리즈 + 트리거 중...' : '수동 릴리즈 + 트리거';
 
     if (!vehicle) {
       manualResultBox.textContent = 'Select a Carrier before manual release trigger.';
@@ -993,6 +1001,7 @@ function renderCompanionLinkTest() {
   const resultBox = document.getElementById('linkTestResult');
   const badge = document.getElementById('linkTestStatusBadge');
   if (!sourceSelect || !targetSelect || !runButton || !resultBox || !badge) return;
+  runButton.textContent = '통신 테스트';
 
   const vehicles = getVehicles();
   const previousSource = sourceSelect.value;
@@ -1449,6 +1458,70 @@ function getActionPlanUploadStateFromResult(responseBody) {
   return 'FAILED';
 }
 
+function getMissionStartStateFromResult(responseBody) {
+  if (responseBody?.reason === 'timeout') return 'TIMEOUT';
+  if (
+    isExpectedCommandResult(responseBody, 'MISSION_START_RESULT') &&
+    responseBody?.accepted === true &&
+    responseBody?.ok === true
+  ) {
+    return 'OK';
+  }
+  return 'FAILED';
+}
+
+function getMissionStartReadiness(vehicle = getSelectedVehicle()) {
+  if (!vehicle) return { ready: false, reason: 'vehicle_not_selected' };
+  if (normalizeVehicleRole(vehicle.role) !== 'carrier') {
+    return { ready: false, reason: 'mission_start_carrier_only' };
+  }
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    return { ready: false, reason: 'backend_not_online' };
+  }
+
+  const connection = getVehicleConnection(vehicle);
+  if (getDisplayedCompanionState(connection) !== 'CONNECTED') {
+    return { ready: false, reason: 'companion_not_connected' };
+  }
+  if (getDisplayedFcState(connection) !== 'CONNECTED') {
+    return { ready: false, reason: 'fc_not_connected' };
+  }
+
+  const mission = connection.mission || {};
+  if (mission.last_upload_result !== 'MISSION_ACK_ACCEPTED' || Number(mission.last_upload_count || 0) <= 0) {
+    return { ready: false, reason: 'mission_not_uploaded' };
+  }
+  if (mission.last_download_result !== 'OK') {
+    return { ready: false, reason: 'mission_not_verified' };
+  }
+
+  const actionPlan = connection.action_plan || {};
+  const actionCount = Number(actionPlan.action_count ?? actionPlan.actions?.length ?? 0);
+  if (actionPlan.loaded !== true || actionCount <= 0) {
+    return { ready: false, reason: 'action_plan_not_loaded' };
+  }
+
+  return { ready: true, reason: 'ready' };
+}
+
+function formatMissionStartResult(vehicle) {
+  if (!vehicle) return 'Select a Carrier before Mission Start.';
+  if (normalizeVehicleRole(vehicle.role) !== 'carrier') return 'Mission Start는 Carrier 전용입니다.';
+  if (!runtimeState.missionStartResult) {
+    const readiness = getMissionStartReadiness(vehicle);
+    return readiness.ready
+      ? 'Mission Start 준비 완료. 버튼을 누르면 확인 창이 표시됩니다.'
+      : `Mission Start 대기: ${readiness.reason}`;
+  }
+
+  if (runtimeState.missionStartState === 'SENDING') return '미션 시작 명령 전송 중...';
+  if (runtimeState.missionStartState === 'OK') return '미션 시작 명령 전송 완료';
+  if (runtimeState.missionStartState === 'TIMEOUT') return 'Mission Start timeout';
+
+  const result = runtimeState.missionStartResult;
+  return `Mission Start 실패: ${result.reason || result.message || 'unknown_error'}`;
+}
+
 async function postDroneCommand(path, body) {
   const response = await fetch(`${runtimeState.backendUrl}${path}`, {
     method: 'POST',
@@ -1481,6 +1554,95 @@ async function prepareSelectedVehicleCommand() {
   const saved = await saveVehicleConfigs({ silent: true });
   if (!saved) return { ok: false, reason: 'vehicle_config_save_failed' };
   return { ok: true, vehicle };
+}
+
+function openMissionStartModal() {
+  const vehicle = getSelectedVehicle();
+  const readiness = getMissionStartReadiness(vehicle);
+  if (!readiness.ready) {
+    runtimeState.missionStartState = 'FAILED';
+    runtimeState.missionStartResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: vehicle?.vehicle_id || '',
+      reason: readiness.reason,
+    };
+    renderMissionSummary();
+    return;
+  }
+
+  document.getElementById('missionStartModal')?.classList.remove('hidden');
+}
+
+function closeMissionStartModal() {
+  document.getElementById('missionStartModal')?.classList.add('hidden');
+}
+
+async function confirmMissionStart() {
+  closeMissionStartModal();
+  const prepared = await prepareSelectedVehicleCommand();
+  const seq = Date.now();
+  if (!prepared.ok) {
+    runtimeState.missionStartState = 'FAILED';
+    runtimeState.missionStartResult = { ok: false, accepted: false, reason: prepared.reason, seq };
+    renderMissionSummary();
+    return;
+  }
+
+  const vehicle = prepared.vehicle;
+  const readiness = getMissionStartReadiness(vehicle);
+  if (!readiness.ready) {
+    runtimeState.missionStartState = 'FAILED';
+    runtimeState.missionStartResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: vehicle.vehicle_id,
+      reason: readiness.reason,
+      seq,
+    };
+    renderMissionSummary();
+    return;
+  }
+
+  runtimeState.missionStartState = 'SENDING';
+  runtimeState.missionStartResult = {
+    ok: false,
+    accepted: false,
+    vehicle_id: vehicle.vehicle_id,
+    reason: 'sending',
+    seq,
+  };
+  renderMissionSummary();
+
+  try {
+    const responseBody = await postDroneCommand('/api/drone/mission-start', {
+      vehicle_id: vehicle.vehicle_id,
+      start_seq: 0,
+      arm: true,
+      auto_mission: true,
+      mission_start: true,
+      confirm_start: true,
+      timeout_ms: 5000,
+    });
+    runtimeState.missionStartResult = responseBody;
+    runtimeState.missionStartState = getMissionStartStateFromResult(responseBody);
+    if (runtimeState.missionStartState === 'OK') {
+      await refreshDroneConnections({ silent: true });
+    }
+  } catch (error) {
+    runtimeState.missionStartState = 'FAILED';
+    runtimeState.missionStartResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: vehicle.vehicle_id,
+      reason: 'request_failed',
+      message: error.message,
+      seq,
+    };
+  } finally {
+    renderMissionSummary();
+    renderRuntimeConnection();
+  }
 }
 
 async function resetRuntimeState() {
@@ -1949,6 +2111,7 @@ function markVehiclesConnecting() {
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
+      mission: null,
       mission_progress: null,
       action_plan: null,
       trigger_feedback_ok: null,
@@ -1995,6 +2158,7 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     last_fc_heartbeat_ms: existing.last_fc_heartbeat_ms ?? null,
     position: existing.position ?? null,
     gps: existing.gps ?? null,
+    mission: existing.mission ?? null,
     mission_progress: existing.mission_progress ?? null,
     action_plan: existing.action_plan ?? null,
     trigger_feedback_ok: existing.trigger_feedback_ok ?? null,
@@ -2105,6 +2269,7 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     last_fc_heartbeat_ms: getDroneStatusValue(result, 'last_fc_heartbeat_ms', existing.last_fc_heartbeat_ms ?? null),
     position: getDroneStatusValue(result, 'position', existing.position ?? null),
     gps: getDroneStatusValue(result, 'gps', existing.gps ?? null),
+    mission: getDroneStatusValue(result, 'mission', existing.mission ?? null),
     mission_progress: getDroneStatusValue(result, 'mission_progress', existing.mission_progress ?? null),
     action_plan: getDroneStatusValue(result, 'action_plan', existing.action_plan ?? null),
     trigger_feedback_ok: getDroneStatusValue(result, 'trigger_feedback_ok', existing.trigger_feedback_ok ?? null),
@@ -2349,6 +2514,7 @@ function getVehicleConnection(vehicle) {
     last_fc_heartbeat_ms: null,
     position: null,
     gps: null,
+    mission: null,
     mission_progress: null,
     action_plan: null,
     trigger_feedback_ok: null,
@@ -3655,10 +3821,11 @@ function renderMissionSummary() {
   const altitudeHelp = document.getElementById('altitudeHelp');
   const validationBox = document.getElementById('missionValidationBox');
   const validateButton = document.getElementById('validateMissionBtn');
-  const uploadButton = document.getElementById('uploadMissionBtn');
-  const readBackButton = document.getElementById('readBackMissionBtn');
   const loadFcMissionButton = document.getElementById('loadFcMissionBtn');
   const uploadVerifyButton = document.getElementById('uploadVerifyMissionBtn');
+  const missionStartButton = document.getElementById('missionStartBtn');
+  const missionStartResultBox = document.getElementById('missionStartResult');
+  const childMissionControlHint = document.getElementById('childMissionControlHint');
 
   if (m && selectedVehicle) {
     applyWaypointMetadata(m, selectedVehicle);
@@ -3680,15 +3847,44 @@ function renderMissionSummary() {
   document.getElementById('wpCount').value = m ? m.waypoints.length : 0;
   document.getElementById('missionState').value = m ? m.uploadState : 'No vehicle';
   document.getElementById('exportQgcBtn').disabled = !m;
-  validateButton.disabled = !m;
-  uploadButton.disabled = !m || runtimeState.status !== 'BACKEND ONLINE';
-  readBackButton.disabled = !selectedVehicle || runtimeState.status !== 'BACKEND ONLINE';
-  loadFcMissionButton.disabled = !selectedVehicle || runtimeState.status !== 'BACKEND ONLINE';
-  uploadVerifyButton.disabled = !m || runtimeState.status !== 'BACKEND ONLINE';
+  if (validateButton) {
+    validateButton.disabled = !m;
+    validateButton.textContent = '미션 검증';
+  }
+  if (loadFcMissionButton) {
+    loadFcMissionButton.disabled = !selectedVehicle || runtimeState.status !== 'BACKEND ONLINE';
+    loadFcMissionButton.textContent = 'FC 미션 불러오기';
+  }
+  if (uploadVerifyButton) {
+    uploadVerifyButton.disabled = !m || runtimeState.status !== 'BACKEND ONLINE';
+    uploadVerifyButton.textContent = '미션 업로드';
+  }
+  if (missionStartButton) {
+    const isCarrier = selectedVehicle && normalizeVehicleRole(selectedVehicle.role) === 'carrier';
+    const isBusy = runtimeState.missionStartState === 'SENDING';
+    const readiness = getMissionStartReadiness(selectedVehicle);
+    missionStartButton.classList.toggle('hidden', Boolean(selectedVehicle && !isCarrier));
+    missionStartButton.disabled = !isCarrier || !readiness.ready || isBusy;
+    missionStartButton.textContent = isBusy ? '미션 시작 중...' : '미션 시작';
+    missionStartButton.title = readiness.ready
+      ? 'Carrier mission start confirmation을 엽니다.'
+      : `Mission Start 대기: ${readiness.reason}`;
+  }
+  if (missionStartResultBox) {
+    const isCarrier = selectedVehicle && normalizeVehicleRole(selectedVehicle.role) === 'carrier';
+    missionStartResultBox.classList.toggle('hidden', Boolean(selectedVehicle && !isCarrier));
+    missionStartResultBox.textContent = formatMissionStartResult(selectedVehicle);
+  }
+  if (childMissionControlHint) {
+    childMissionControlHint.classList.toggle('hidden', !(selectedVehicle && isChildVehicle(selectedVehicle)));
+  }
   document.getElementById('clearMissionBtn').disabled = !m || m.waypoints.length === 0;
+  document.getElementById('clearMissionBtn').textContent = '선택한 웨이포인트 삭제';
   document.getElementById('focusSelectedBtn').disabled =
     !selectedVehicle || !getLivePositionForVehicle(selectedVehicle.vehicle_id);
+  document.getElementById('focusSelectedBtn').textContent = '선택 드론으로 이동';
   document.getElementById('fitLiveDronesBtn').disabled = liveMarkerCount === 0;
+  document.getElementById('fitLiveDronesBtn').textContent = '전체 드론 보기';
 
   if (
     validationBox &&
@@ -4077,7 +4273,7 @@ async function readBackSelectedMission() {
   const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
   if (!vehicle) {
-    alert('Read Back 불가: vehicle을 먼저 선택하세요.');
+    alert('FC 미션 불러오기 불가: vehicle을 먼저 선택하세요.');
     return;
   }
   if (!requireBackendOnlineForMissionAction()) return;
@@ -4097,7 +4293,7 @@ async function loadFcMissionToMap() {
   const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
   if (!vehicle || !mission) {
-    alert('Load FC Mission 불가: vehicle을 먼저 선택하세요.');
+    alert('FC 미션 불러오기 불가: vehicle을 먼저 선택하세요.');
     return;
   }
   if (!requireBackendOnlineForMissionAction()) return;
@@ -4121,7 +4317,7 @@ async function loadFcMissionToMap() {
 
     mission.waypoints = convertReadbackItemsToWaypoints(items, vehicle);
     applyWaypointMetadata(mission, vehicle);
-    mission.uploadState = 'Read Back';
+    mission.uploadState = 'FC Mission Loaded';
     clearMissionResultLog();
     renderAll();
     showMissionOperationResult('Loaded FC mission to map', response, mission, vehicle);
@@ -4137,7 +4333,7 @@ async function uploadAndVerifySelectedMission() {
   showMissionValidation(validation, buildMissionSummaryLines(mission, vehicle));
 
   if (!mission || !vehicle || validation.errors.length > 0) {
-    alert('Upload + Verify 불가:\n- ' + validation.errors.join('\n- '));
+    alert('미션 업로드 불가:\n- ' + validation.errors.join('\n- '));
     return;
   }
   if (!requireBackendOnlineForMissionAction()) return;

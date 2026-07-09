@@ -198,7 +198,90 @@
     .section.is-collapsed .collapsible-section-body {
       display: none;
     }
+    .qgc-export-settings {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.28);
+    }
+    .qgc-export-settings summary {
+      cursor: pointer;
+      user-select: none;
+      padding: 9px 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .qgc-export-settings[open] summary {
+      color: var(--accent);
+      border-bottom: 1px solid var(--line);
+    }
+    .qgc-export-settings-body {
+      padding: 10px;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 5000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(2, 6, 23, 0.72);
+    }
+    .modal-backdrop.hidden {
+      display: none;
+    }
+    .modal-card {
+      width: min(460px, 100%);
+      border: 1px solid rgba(248, 113, 113, 0.45);
+      border-radius: 14px;
+      padding: 18px;
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    }
+    .modal-card h2 {
+      margin: 0 0 10px;
+      color: var(--danger);
+    }
+    .modal-card p {
+      margin: 0;
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+    }
     #map { width: 100%; height: 100%; background: #111827; position: relative; }
+    .mission-start-overlay {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      z-index: 900;
+      pointer-events: auto;
+    }
+    .mission-start-button {
+      min-width: 136px;
+      min-height: 44px;
+      border-color: rgba(248, 113, 113, 0.85);
+      background: linear-gradient(135deg, rgba(185, 28, 28, 0.96), rgba(127, 29, 29, 0.96));
+      color: #fff;
+      font-size: 15px;
+      font-weight: 900;
+      letter-spacing: 0.02em;
+      box-shadow: 0 0 0 2px rgba(127, 29, 29, 0.45), 0 12px 34px rgba(248, 113, 113, 0.35);
+    }
+    .mission-start-button:disabled {
+      border-color: rgba(75, 85, 99, 0.85);
+      background: rgba(31, 41, 55, 0.82);
+      color: var(--muted);
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.7);
+      cursor: not-allowed;
+    }
     .mission-monitor-overlay {
       position: absolute;
       right: 14px;

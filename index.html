@@ -152,6 +152,11 @@
     </aside>
 
     <main id="map">
+      <div class="mission-start-overlay">
+        <button id="missionStartBtn" class="mission-start-button" type="button" disabled title="미션 시작은 아직 구현되지 않았습니다.">
+          미션 시작
+        </button>
+      </div>
       <div id="missionMonitorOverlay" class="mission-monitor-overlay"></div>
     </main>
 
@@ -159,7 +164,7 @@
 
     <aside class="right">
       <div class="section">
-        <h2>선택 드론 Mission</h2>
+        <h2>선택 드론 MISSION</h2>
         <div class="grid3">
           <div><label id="defaultAltLabel">기본 고도 m</label><input id="defaultAlt" type="number" step="1" value="10" /></div>
           <div><label>WP 수</label><input id="wpCount" disabled /></div>
@@ -168,21 +173,91 @@
         <div id="altitudeHelp" class="hint" style="margin-top:8px;">지상 Home 기준 상대고도</div>
         <div class="mission-plan-actions" style="margin-top:10px;">
           <button id="exportQgcBtn" class="primary">선택 드론 .plan 저장</button>
-          <button id="validateMissionBtn" type="button">Validate Mission</button>
-          <button id="uploadMissionBtn" type="button">Upload to FC</button>
-          <button id="readBackMissionBtn" type="button">Read Back</button>
-          <button id="loadFcMissionBtn" type="button">Load FC Mission to Map</button>
-          <button id="uploadVerifyMissionBtn" type="button">Upload + Verify</button>
-          <button id="clearMissionBtn">선택 드론 WP 삭제</button>
-          <button id="focusSelectedBtn" type="button">Focus Selected</button>
-          <button id="fitLiveDronesBtn" type="button">Fit Live Drones</button>
         </div>
-        <div id="missionValidationBox" class="runtime-result">No mission validation yet.</div>
+        <details class="qgc-export-settings">
+          <summary>QGC .plan 내보내기 설정</summary>
+          <div class="qgc-export-settings-body">
+            <div class="grid2">
+              <div>
+                <label>Firmware</label>
+                <select id="firmwareType">
+                  <option value="12">PX4</option>
+                  <option value="3">ArduPilot</option>
+                </select>
+              </div>
+              <div>
+                <label>Vehicle</label>
+                <select id="vehicleType">
+                  <option value="2">Multicopter</option>
+                  <option value="1">Fixed Wing</option>
+                  <option value="22">VTOL</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid2" style="margin-top:8px;">
+              <div><label>Hover Speed</label><input id="hoverSpeed" type="number" step="0.1" /></div>
+              <div><label>Cruise Speed</label><input id="cruiseSpeed" type="number" step="0.1" /></div>
+            </div>
+            <div style="margin-top:8px;">
+              <label><input id="useFirstAsTakeoff" type="checkbox" style="width:auto; vertical-align:middle;" checked /> 첫 waypoint를 TAKEOFF로 export</label>
+            </div>
+          </div>
+        </details>
       </div>
 
-      <div class="section" id="companionLinkTestCard">
+      <div class="section">
+        <h2>MISSION CONTROL</h2>
+        <div id="childMissionControlHint" class="hint hidden" style="margin-bottom:10px;">
+          자드론 미션은 nav_gate 트리거 이후 FC에서 진입합니다.
+        </div>
+        <div class="mission-plan-actions">
+          <button id="validateMissionBtn" type="button">미션 검증</button>
+          <button id="uploadVerifyMissionBtn" type="button">미션 업로드</button>
+          <button id="uploadActionPlanBtn" type="button">액션 플랜 업로드</button>
+          <button id="loadFcMissionBtn" type="button">FC 미션 불러오기</button>
+          <button id="clearFcMissionBtn" type="button">FC 미션 삭제</button>
+          <button id="resetRuntimeStateBtn" type="button">런타임 상태 초기화</button>
+        </div>
+        <div id="missionValidationBox" class="runtime-result">No mission validation yet.</div>
+        <div id="missionStartResult" class="hint runtime-message">Mission Start requires verified Carrier mission and loaded action plan.</div>
+        <div id="actionPlanUploadResult" class="hint runtime-message">Configure RELEASE waypoint actions before action plan upload.</div>
+        <div id="missionClearResult" class="hint runtime-message">Select a vehicle and connect backend before mission clear.</div>
+        <div id="runtimeResetResult" class="hint runtime-message">Select a vehicle and connect backend before reset.</div>
+      </div>
+
+      <div class="section">
+        <h2>WAYPOINT 목록</h2>
+        <table class="wp-table">
+          <thead>
+            <tr>
+              <th>FC seq</th>
+              <th>좌표</th>
+              <th id="waypointAltitudeHeader">고도</th>
+              <th>Command / Action</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="waypointRows"></tbody>
+        </table>
+        <div class="mission-plan-actions" style="margin-top:10px;">
+          <button id="clearMissionBtn">선택한 웨이포인트 삭제</button>
+        </div>
+        <div class="hint" style="margin-top:10px;">
+          지도 클릭 시 선택된 드론에 waypoint가 추가됩니다. 첫 고도는 기본 고도, 이후는 직전 waypoint 고도를 상속합니다.
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>지도 보기</h2>
+        <div class="mission-plan-actions">
+          <button id="focusSelectedBtn" type="button">선택 드론으로 이동</button>
+          <button id="fitLiveDronesBtn" type="button">전체 드론 보기</button>
+        </div>
+      </div>
+
+      <div class="section" id="debugToolsCard">
         <div class="section-head">
-          <h2>Companion Link Test</h2>
+          <h2>DEBUG TOOLS</h2>
           <span id="linkTestStatusBadge" class="badge">IDLE</span>
         </div>
         <div>
@@ -197,44 +272,11 @@
           <div><label for="linkTestCount">Count</label><input id="linkTestCount" type="number" min="1" max="20" value="5" /></div>
           <div><label for="linkTestTimeoutMs">Timeout ms</label><input id="linkTestTimeoutMs" type="number" min="100" max="5000" value="500" /></div>
         </div>
-        <button id="runLinkTestBtn" type="button" style="width:100%; margin-top:10px;">Run Ping Test</button>
+        <div class="mission-plan-actions" style="margin-top:10px;">
+          <button id="runLinkTestBtn" type="button">통신 테스트</button>
+          <button id="manualReleaseTriggerBtn" class="primary" type="button">수동 릴리즈 + 트리거</button>
+        </div>
         <div id="linkTestResult" class="runtime-result muted">No link test yet.</div>
-      </div>
-
-      <div class="section">
-        <h2>Waypoint 목록</h2>
-        <table class="wp-table">
-          <thead>
-            <tr>
-              <th>FC seq</th>
-              <th>좌표</th>
-              <th id="waypointAltitudeHeader">고도</th>
-              <th>Command / Action</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="waypointRows"></tbody>
-        </table>
-        <div class="hint" style="margin-top:10px;">
-          지도 클릭 시 선택된 드론에 waypoint가 추가됩니다. 첫 고도는 기본 고도, 이후는 직전 waypoint 고도를 상속합니다.
-        </div>
-      </div>
-
-      <div class="section">
-        <h2>Companion Test Prep</h2>
-        <div class="hint" style="margin-bottom:10px;">
-          Recommended test prep: Reset Runtime State → Clear Mission → Upload Mission → Upload Action Plan.
-        </div>
-        <div class="mission-plan-actions">
-          <button id="resetRuntimeStateBtn" type="button">Reset Runtime State</button>
-          <button id="clearFcMissionBtn" type="button">Clear Mission</button>
-          <button id="testPrepUploadMissionBtn" type="button">Upload Mission</button>
-          <button id="uploadActionPlanBtn" type="button">Upload Action Plan</button>
-          <button id="manualReleaseTriggerBtn" class="primary" type="button">Release + Trigger</button>
-        </div>
-        <div id="runtimeResetResult" class="hint runtime-message">Select a vehicle and connect backend before reset.</div>
-        <div id="missionClearResult" class="hint runtime-message">Select a vehicle and connect backend before mission clear.</div>
-        <div id="actionPlanUploadResult" class="hint runtime-message">Configure RELEASE waypoint actions before action plan upload.</div>
         <div id="manualReleaseTriggerResult" class="hint runtime-message">
           Select a Carrier and connect backend before manual release trigger.
         </div>
@@ -244,35 +286,23 @@
         <h2>Sanity Check</h2>
         <div id="sanityBox" class="status-box"></div>
       </div>
-
-      <div class="section">
-        <h2>QGC Plan 설정</h2>
-        <div class="grid2">
-          <div>
-            <label>Firmware</label>
-            <select id="firmwareType">
-              <option value="12">PX4</option>
-              <option value="3">ArduPilot</option>
-            </select>
-          </div>
-          <div>
-            <label>Vehicle</label>
-            <select id="vehicleType">
-              <option value="2">Multicopter</option>
-              <option value="1">Fixed Wing</option>
-              <option value="22">VTOL</option>
-            </select>
-          </div>
-        </div>
-        <div class="grid2" style="margin-top:8px;">
-          <div><label>Hover Speed</label><input id="hoverSpeed" type="number" step="0.1" /></div>
-          <div><label>Cruise Speed</label><input id="cruiseSpeed" type="number" step="0.1" /></div>
-        </div>
-        <div style="margin-top:8px;">
-          <label><input id="useFirstAsTakeoff" type="checkbox" style="width:auto; vertical-align:middle;" checked /> 첫 waypoint를 TAKEOFF로 export</label>
-        </div>
-      </div>
     </aside>
+  </div>
+</div>
+
+<div id="missionStartModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="missionStartModalTitle">
+  <div class="modal-card">
+    <h2 id="missionStartModalTitle">미션 시작 확인</h2>
+    <p>
+      Carrier 미션을 시작합니다.<br>
+      이 작업은 실제 FC에 AUTO.MISSION, Arm, Mission Start 명령을 전송합니다.<br>
+      실기체가 움직일 수 있습니다.<br>
+      야외 테스트 준비가 완료된 경우에만 진행하세요.
+    </p>
+    <div class="modal-actions">
+      <button id="cancelMissionStartBtn" type="button">취소</button>
+      <button id="confirmMissionStartBtn" class="danger" type="button">미션 시작</button>
+    </div>
   </div>
 </div>
 

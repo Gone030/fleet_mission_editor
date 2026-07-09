@@ -92,6 +92,16 @@ class MissionClearRequest(BaseModel):
     seq: Optional[int] = None
 
 
+class MissionStartRequest(BaseModel):
+    vehicle_id: str
+    start_seq: int = 0
+    arm: bool = True
+    auto_mission: bool = True
+    mission_start: bool = True
+    confirm_start: bool = False
+    timeout_ms: int = Field(default=5000, ge=100, le=30000)
+
+
 class ActionPlanUploadRequest(BaseModel):
     vehicle_id: str
     mission_id: str
@@ -130,6 +140,13 @@ DEFAULT_RELEASE_ACTUATOR = {
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def sanitize_vehicle_config(vehicle):
@@ -285,6 +302,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
         "position": health.get("position"),
         "gps": health.get("gps"),
+        "mission": health.get("mission"),
         "mission_progress": health.get("mission_progress"),
         "action_plan": health.get("action_plan"),
         "trigger_feedback_ok": health.get("trigger_feedback_ok"),
@@ -1220,6 +1238,64 @@ def mission_clear(request: MissionClearRequest):
             "seq": request.seq,
         },
         "MISSION_CLEAR_RESULT",
+    )
+
+
+def reject_mission_start(vehicle_id, reason, status_code=400, status_result=None):
+    detail = {
+        "ok": False,
+        "accepted": False,
+        "vehicle_id": vehicle_id,
+        "reason": reason,
+    }
+    if status_result is not None:
+        detail["status"] = status_result
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+@app.post("/api/drone/mission-start")
+def mission_start(request: MissionStartRequest):
+    vehicle = get_command_vehicle_or_raise(request.vehicle_id)
+
+    if request.confirm_start is not True:
+        reject_mission_start(request.vehicle_id, "mission_start_confirmation_required")
+
+    if normalize_vehicle_role(vehicle.role) != "carrier":
+        reject_mission_start(request.vehicle_id, "mission_start_carrier_only")
+
+    status_result = request_vehicle_status(
+        vehicle,
+        now_ms(),
+        timeout_sec=max(0.1, min(request.timeout_ms / 1000, 30.0)),
+    )
+    if status_result.get("connection_state") != "CONNECTED":
+        reject_mission_start(request.vehicle_id, "companion_not_connected", status_result=status_result)
+
+    if status_result.get("fc_connected") != "CONNECTED":
+        reject_mission_start(request.vehicle_id, "fc_not_connected", status_result=status_result)
+
+    mission = status_result.get("mission") if isinstance(status_result.get("mission"), dict) else {}
+    if mission.get("last_upload_result") != "MISSION_ACK_ACCEPTED" or safe_int(mission.get("last_upload_count")) <= 0:
+        reject_mission_start(request.vehicle_id, "mission_not_uploaded", status_result=status_result)
+    if mission.get("last_download_result") != "OK":
+        reject_mission_start(request.vehicle_id, "mission_not_verified", status_result=status_result)
+
+    action_plan = status_result.get("action_plan") if isinstance(status_result.get("action_plan"), dict) else {}
+    if action_plan.get("loaded") is not True or safe_int(action_plan.get("action_count")) <= 0:
+        reject_mission_start(request.vehicle_id, "action_plan_not_loaded", status_result=status_result)
+
+    return send_companion_command(
+        vehicle,
+        {
+            "type": "MISSION_START",
+            "seq": now_ms(),
+            "start_seq": request.start_seq,
+            "arm": request.arm,
+            "auto_mission": request.auto_mission,
+            "mission_start": request.mission_start,
+        },
+        "MISSION_START_RESULT",
+        timeout_sec=max(0.1, min(request.timeout_ms / 1000, 30.0)),
     )
 
 
