@@ -1,14 +1,27 @@
 AGENT.md
 docs/
 docs-local/
+
+# Python environments
 .venv/
 venv/
 env/
 
-__pychech__/
+# Python cache
+__pycache__/
 *.py[cod]
 *$py.class
 
-*.log
-.DS_store
+# Local runtime data
 backend/data/
+
+# Desktop/PyInstaller build outputs
+build/
+dist/
+*.spec
+.pyinstaller/
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
