@@ -1,5 +1,7 @@
 import json
 import socket
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -11,10 +13,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def get_project_root():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parents[1]
+
+
+PROJECT_ROOT = get_project_root()
 SRC_DIR = PROJECT_ROOT / "src"
 INDEX_HTML = PROJECT_ROOT / "index.html"
-DATA_DIR = PROJECT_ROOT / "backend" / "data"
+DATA_DIR = Path(os.environ.get("FLEET_MISSION_EDITOR_DATA_DIR", PROJECT_ROOT / "backend" / "data"))
 VEHICLES_PATH = DATA_DIR / "vehicles.json"
 
 app = FastAPI(title="Fleet Runtime Backend", version="0.1.0")
