@@ -82,19 +82,19 @@ launcher는 backend를 켜고 브라우저에서 `http://127.0.0.1:8000`을 자�
 macOS one-click run:
 
 ```text
-chmod +x "Start Fleet Mission Editor.command"
+chmod +x "desktop/macos/Start Fleet Mission Editor.command"
 ```
 
-그 뒤 Finder에서 `Start Fleet Mission Editor.command`를 더블클릭한다.
+그 뒤 Finder에서 `desktop/macos/Start Fleet Mission Editor.command`를 더블클릭한다.
 backend가 켜지고 브라우저에서 `http://127.0.0.1:8000`이 자동으로 열린다.
 
 Windows one-click run:
 
 ```text
-Start Fleet Mission Editor.bat
+desktop\windows\Start Fleet Mission Editor.bat
 ```
 
-파일 탐색기에서 `Start Fleet Mission Editor.bat`를 더블클릭한다.
+파일 탐색기에서 `desktop\windows\Start Fleet Mission Editor.bat`를 더블클릭한다.
 `.venv`가 없으면 자동으로 만들고, backend requirements를 설치한 뒤
 브라우저에서 `http://127.0.0.1:8000`을 자동으로 연다.
 
@@ -210,8 +210,16 @@ connection lost, GPS invalid, trigger 실패 등으로 자동 실행하지 않�
 ```text
 fleet-mission-editor/
 ├─ index.html
-├─ Start Fleet Mission Editor.command
-├─ Start Fleet Mission Editor.bat
+├─ desktop/
+│  ├─ launcher.py
+│  ├─ macos/
+│  │  ├─ Start Fleet Mission Editor.command
+│  │  ├─ Build Fleet Mission Editor.command
+│  │  └─ build_desktop_mac.sh
+│  └─ windows/
+│     ├─ Start Fleet Mission Editor.bat
+│     ├─ Build Fleet Mission Editor.bat
+│     └─ build_desktop_windows.ps1
 ├─ backend/
 │  ├─ server.py
 │  ├─ requirements.txt
