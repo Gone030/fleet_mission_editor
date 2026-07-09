@@ -92,6 +92,13 @@ class MissionClearRequest(BaseModel):
     seq: Optional[int] = None
 
 
+class ActionPlanUploadRequest(BaseModel):
+    vehicle_id: str
+    mission_id: str
+    actions: List[Dict]
+    seq: Optional[int] = None
+
+
 class CompanionLinkTestRequest(BaseModel):
     source_vehicle_id: str
     target_vehicle_id: str
@@ -278,6 +285,10 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
         "position": health.get("position"),
         "gps": health.get("gps"),
+        "mission_progress": health.get("mission_progress"),
+        "action_plan": health.get("action_plan"),
+        "trigger_feedback_ok": health.get("trigger_feedback_ok"),
+        "trigger_forwarded_ok": health.get("trigger_forwarded_ok"),
         "release_state": health.get("release_state"),
         "trigger_state": health.get("trigger_state") or "UNKNOWN",
         "last_trigger_seq": health.get("last_trigger_seq"),
@@ -1212,6 +1223,124 @@ def mission_clear(request: MissionClearRequest):
     )
 
 
+def validate_action_plan_upload(vehicle, mission_id, actions):
+    errors = []
+    warnings = []
+    vehicles_by_id = {
+        vehicle_config.get("vehicle_id"): vehicle_config
+        for vehicle_config in active_vehicle_configs
+        if vehicle_config.get("vehicle_id")
+    }
+
+    if normalize_vehicle_role(vehicle.role) != "carrier":
+        errors.append("vehicle_must_be_carrier")
+    if not mission_id:
+        errors.append("mission_id_required")
+    if not isinstance(actions, list):
+        errors.append("actions_must_be_array")
+        actions = []
+    if len(actions) == 0:
+        errors.append("actions_empty")
+
+    seen_action_ids = set()
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            errors.append(f"action_{index}_must_be_object")
+            continue
+        action_id = action.get("action_id")
+        if not action_id:
+            errors.append(f"action_{index}_action_id_required")
+        elif action_id in seen_action_ids:
+            errors.append(f"action_{index}_duplicate_action_id")
+        seen_action_ids.add(action_id)
+
+        if action.get("type") != "RELEASE_AND_TRIGGER_CHILD":
+            errors.append(f"action_{index}_unsupported_type")
+        trigger_seq = action.get("trigger_waypoint_seq")
+        if not isinstance(trigger_seq, int) or trigger_seq < 0:
+            errors.append(f"action_{index}_invalid_trigger_waypoint_seq")
+
+        target_vehicle_id = action.get("target_vehicle_id")
+        target_vehicle = vehicles_by_id.get(target_vehicle_id)
+        if not target_vehicle_id:
+            errors.append(f"action_{index}_target_vehicle_id_required")
+        elif not target_vehicle:
+            errors.append(f"action_{index}_target_vehicle_not_found")
+        elif normalize_vehicle_role(target_vehicle.get("role")) != "child":
+            errors.append(f"action_{index}_target_vehicle_not_child")
+
+        release = action.get("release")
+        if not isinstance(release, dict):
+            errors.append(f"action_{index}_release_required")
+        else:
+            if release.get("method") != "MAV_CMD_DO_SET_ACTUATOR":
+                errors.append(f"action_{index}_release_method_must_be_actuator")
+            if release.get("actuator_index") != 1:
+                errors.append(f"action_{index}_release_actuator_index_must_be_1")
+            try:
+                value = float(release.get("value"))
+                reset_value = float(release.get("reset_value"))
+                if value < -1.0 or value > 1.0:
+                    errors.append(f"action_{index}_release_value_out_of_range")
+                if reset_value < -1.0 or reset_value > 1.0:
+                    errors.append(f"action_{index}_release_reset_value_out_of_range")
+            except (TypeError, ValueError):
+                errors.append(f"action_{index}_release_value_must_be_number")
+            try:
+                hold_ms = int(release.get("hold_ms"))
+                if hold_ms < 0:
+                    errors.append(f"action_{index}_release_hold_ms_negative")
+            except (TypeError, ValueError):
+                errors.append(f"action_{index}_release_hold_ms_must_be_integer")
+
+        trigger = action.get("trigger")
+        if not isinstance(trigger, dict):
+            errors.append(f"action_{index}_trigger_required")
+        else:
+            if trigger.get("type") != "CHILD_NAV_GATE_TRIGGER":
+                errors.append(f"action_{index}_unexpected_trigger_type")
+            if not trigger.get("target_ip"):
+                errors.append(f"action_{index}_target_ip_required")
+            try:
+                target_port = int(trigger.get("target_port"))
+                if target_port < 1 or target_port > 65535:
+                    errors.append(f"action_{index}_target_port_out_of_range")
+            except (TypeError, ValueError):
+                errors.append(f"action_{index}_target_port_must_be_integer")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/drone/action-plan-upload")
+def action_plan_upload(request: ActionPlanUploadRequest):
+    vehicle = get_command_vehicle_or_raise(request.vehicle_id)
+    validation = validate_action_plan_upload(vehicle, request.mission_id, request.actions)
+    if not validation["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                **validation,
+                "reason": "action_plan_validation_failed",
+                "vehicle_id": request.vehicle_id,
+            },
+        )
+
+    return send_companion_command(
+        vehicle,
+        {
+            "type": "ACTION_PLAN_UPLOAD",
+            "seq": request.seq,
+            "mission_id": request.mission_id,
+            "actions": request.actions,
+        },
+        "ACTION_PLAN_UPLOAD_RESULT",
+    )
+
+
 @app.post("/api/companion/link-test")
 def companion_link_test(request: CompanionLinkTestRequest):
     source_vehicle = known_drone_configs.get(request.source_vehicle_id)
@@ -1306,17 +1435,11 @@ def validate_mission_upload_payload(payload):
             errors.append(f"item_{index}_position_must_be_number")
 
     if role == "child" and items:
-        if items[0].get("command") == MISSION_COMMAND_NAV_TAKEOFF:
-            errors.append("child_first_item_must_not_be_takeoff")
-        if items[0].get("command") != MISSION_COMMAND_NAV_WAYPOINT:
-            warnings.append("child_first_item_should_be_nav_waypoint")
         try:
-            if float(items[0].get("z") or 0) > 2:
+            if items[0].get("command") != MISSION_COMMAND_NAV_TAKEOFF and float(items[0].get("z") or 0) > 2:
                 warnings.append("child_wp1_alt_offset_gt_2m")
         except (TypeError, ValueError):
             pass
-        if len(items) == 1:
-            warnings.append("child_wp1_is_handoff_add_wp2_for_movement_check")
 
     if role == "carrier":
         commands = [item.get("command") for item in items if isinstance(item, dict)]
@@ -1347,7 +1470,7 @@ def validate_mission_upload_payload(payload):
                     if action.get("type") != "RELEASE_AND_TRIGGER_CHILD":
                         errors.append(f"action_{index}_unsupported_type")
                     trigger_seq = action.get("trigger_waypoint_seq")
-                    if not isinstance(trigger_seq, int) or trigger_seq < 1:
+                    if not isinstance(trigger_seq, int) or trigger_seq < 0:
                         errors.append(f"action_{index}_invalid_trigger_waypoint_seq")
                     target_vehicle_id = action.get("target_vehicle_id")
                     if not target_vehicle_id:

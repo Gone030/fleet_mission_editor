@@ -36,6 +36,8 @@ const runtimeState = {
   runtimeResetResult: null,
   missionClearState: 'IDLE',
   missionClearResult: null,
+  actionPlanUploadState: 'IDLE',
+  actionPlanUploadResult: null,
   vehicleSaveStatus: 'Vehicles not loaded',
   vehicleSaveStatusKind: '',
   vehicleSaveInFlight: false,
@@ -206,6 +208,12 @@ const CARRIER_STEP_TYPES = [
   'LAND',
 ];
 
+const CHILD_STEP_TYPES = [
+  'TAKEOFF',
+  'WAYPOINT',
+  'LAND',
+];
+
 const DEFAULT_RELEASE_ACTUATOR = {
   method: 'MAV_CMD_DO_SET_ACTUATOR',
   actuator_index: 1,
@@ -305,7 +313,7 @@ document.getElementById('manualReleaseTriggerBtn').addEventListener('click', exe
 document.getElementById('resetRuntimeStateBtn').addEventListener('click', resetRuntimeState);
 document.getElementById('clearFcMissionBtn').addEventListener('click', clearFcMission);
 document.getElementById('testPrepUploadMissionBtn').addEventListener('click', uploadSelectedMission);
-document.getElementById('uploadActionPlanBtn').addEventListener('click', uploadActionPlanDryRun);
+document.getElementById('uploadActionPlanBtn').addEventListener('click', uploadActionPlan);
 document.getElementById('connectBackendBtn').addEventListener('click', connectBackend);
 document.getElementById('refreshDroneStatusBtn').addEventListener('click', () => refreshDroneConnections());
 document.getElementById('connectDronesBtn').addEventListener('click', connectDrones);
@@ -337,6 +345,7 @@ function renderAll() {
   renderCompanionTestPrep();
   renderSanityCheck();
   renderRuntimeConnection();
+  renderMissionMonitor();
 }
 
 function clearCompanionCommandResults() {
@@ -346,6 +355,8 @@ function clearCompanionCommandResults() {
   runtimeState.runtimeResetResult = null;
   runtimeState.missionClearState = 'IDLE';
   runtimeState.missionClearResult = null;
+  runtimeState.actionPlanUploadState = 'IDLE';
+  runtimeState.actionPlanUploadResult = null;
 }
 
 function setVehicleSaveStatus(text, kind = '') {
@@ -914,6 +925,7 @@ function renderCompanionTestPrep() {
   const clearResultBox = document.getElementById('missionClearResult');
   const uploadMissionButton = document.getElementById('testPrepUploadMissionBtn');
   const uploadActionPlanButton = document.getElementById('uploadActionPlanBtn');
+  const uploadActionPlanResultBox = document.getElementById('actionPlanUploadResult');
   const manualTarget = vehicle ? getManualReleaseTarget(vehicle) : null;
   const backendOnline = runtimeState.status === 'BACKEND ONLINE';
 
@@ -936,7 +948,13 @@ function renderCompanionTestPrep() {
   }
 
   if (uploadActionPlanButton) {
-    uploadActionPlanButton.disabled = !vehicle || !backendOnline || isChildVehicle(vehicle);
+    const isBusy = runtimeState.actionPlanUploadState === 'SENDING';
+    uploadActionPlanButton.disabled = !vehicle || !backendOnline || isChildVehicle(vehicle) || isBusy;
+    uploadActionPlanButton.textContent = isBusy ? 'Uploading Action Plan...' : 'Upload Action Plan';
+  }
+
+  if (uploadActionPlanResultBox) {
+    uploadActionPlanResultBox.textContent = formatActionPlanUploadResult(vehicle);
   }
 
   if (manualButton && manualResultBox) {
@@ -1356,6 +1374,23 @@ function formatMissionClearResult(vehicle) {
   return `Mission clear failed: ${result.reason || result.message || 'unknown_error'}`;
 }
 
+function formatActionPlanUploadResult(vehicle) {
+  if (!vehicle) return 'Select a Carrier and connect backend before action plan upload.';
+  if (isChildVehicle(vehicle)) return 'Action Plan upload requires selected vehicle role=carrier.';
+  if (!runtimeState.actionPlanUploadResult) {
+    return runtimeState.status === 'BACKEND ONLINE'
+      ? `Ready to upload action plan for ${vehicle.vehicle_id}.`
+      : 'Backend must be online before action plan upload.';
+  }
+
+  const result = runtimeState.actionPlanUploadResult;
+  if (runtimeState.actionPlanUploadState === 'OK') return 'Action Plan uploaded';
+  if (runtimeState.actionPlanUploadState === 'TIMEOUT') return 'Action Plan upload timeout';
+  if (runtimeState.actionPlanUploadState === 'SENDING') return 'Action Plan upload sending...';
+  if (result.reason === 'no_waypoint_actions_configured') return 'No waypoint actions configured';
+  return `Action Plan upload failed: ${result.reason || result.message || 'unknown_error'}`;
+}
+
 function getCommandResultDetail(responseBody) {
   return responseBody?.result && typeof responseBody.result === 'object'
     ? responseBody.result
@@ -1394,6 +1429,18 @@ function getMissionClearStateFromResult(responseBody) {
   }
   if (
     isExpectedCommandResult(responseBody, 'MISSION_CLEAR_RESULT') &&
+    responseBody?.accepted === true &&
+    responseBody?.ok === true
+  ) {
+    return 'OK';
+  }
+  return 'FAILED';
+}
+
+function getActionPlanUploadStateFromResult(responseBody) {
+  if (responseBody?.reason === 'timeout') return 'TIMEOUT';
+  if (
+    isExpectedCommandResult(responseBody, 'ACTION_PLAN_UPLOAD_RESULT') &&
     responseBody?.accepted === true &&
     responseBody?.ok === true
   ) {
@@ -1902,6 +1949,10 @@ function markVehiclesConnecting() {
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
+      mission_progress: null,
+      action_plan: null,
+      trigger_feedback_ok: null,
+      trigger_forwarded_ok: null,
       release_state: null,
       trigger_state: 'UNKNOWN',
       last_trigger_seq: null,
@@ -1944,6 +1995,10 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     last_fc_heartbeat_ms: existing.last_fc_heartbeat_ms ?? null,
     position: existing.position ?? null,
     gps: existing.gps ?? null,
+    mission_progress: existing.mission_progress ?? null,
+    action_plan: existing.action_plan ?? null,
+    trigger_feedback_ok: existing.trigger_feedback_ok ?? null,
+    trigger_forwarded_ok: existing.trigger_forwarded_ok ?? null,
     release_state: existing.release_state ?? null,
     trigger_state: existing.trigger_state || 'UNKNOWN',
     last_trigger_seq: existing.last_trigger_seq ?? null,
@@ -2050,6 +2105,10 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     last_fc_heartbeat_ms: getDroneStatusValue(result, 'last_fc_heartbeat_ms', existing.last_fc_heartbeat_ms ?? null),
     position: getDroneStatusValue(result, 'position', existing.position ?? null),
     gps: getDroneStatusValue(result, 'gps', existing.gps ?? null),
+    mission_progress: getDroneStatusValue(result, 'mission_progress', existing.mission_progress ?? null),
+    action_plan: getDroneStatusValue(result, 'action_plan', existing.action_plan ?? null),
+    trigger_feedback_ok: getDroneStatusValue(result, 'trigger_feedback_ok', existing.trigger_feedback_ok ?? null),
+    trigger_forwarded_ok: getDroneStatusValue(result, 'trigger_forwarded_ok', existing.trigger_forwarded_ok ?? null),
     release_state: getDroneStatusValue(result, 'release_state', existing.release_state ?? null),
     trigger_state: getDroneStatusValue(result, 'trigger_state', existing.trigger_state || 'UNKNOWN'),
     last_trigger_seq: getDroneStatusValue(result, 'last_trigger_seq', existing.last_trigger_seq ?? null),
@@ -2113,6 +2172,7 @@ function applyDroneStatusResults(results) {
   renderMissionSummary();
   renderEmergencyControls();
   renderCompanionTestPrep();
+  renderMissionMonitor();
 }
 
 function normalizeDroneStatusResponse(responseBody) {
@@ -2289,6 +2349,10 @@ function getVehicleConnection(vehicle) {
     last_fc_heartbeat_ms: null,
     position: null,
     gps: null,
+    mission_progress: null,
+    action_plan: null,
+    trigger_feedback_ok: null,
+    trigger_forwarded_ok: null,
     release_state: null,
     trigger_state: 'UNKNOWN',
     last_trigger_seq: null,
@@ -2359,6 +2423,95 @@ function isCarrierConnection(connection, vehicle) {
   if (hasCarrierRuntimeFields) return true;
   if (role === 'child') return false;
   return false;
+}
+
+function formatMissionMonitorBool(value) {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return 'UNKNOWN';
+}
+
+function getMissionMonitorItemLabel(seq, mission, vehicle) {
+  if (seq === null || seq === undefined || seq === '') return '-';
+  const fcMissionItems = buildFcMissionItems(mission, vehicle);
+  const missionItem = fcMissionItems.find((item) => Number(item.seq) === Number(seq));
+  if (!missionItem) return '알 수 없음';
+
+  if (missionItem.command === COMMAND.MAV_CMD_NAV_TAKEOFF) return 'TAKEOFF';
+  if (missionItem.command === COMMAND.MAV_CMD_NAV_LAND) return 'LAND';
+
+  const kind = String(missionItem.kind || '').trim().toLowerCase();
+  if (kind === 'release') {
+    const target = getVehicleById(missionItem.waypoint?.target_vehicle_id);
+    return target ? `RELEASE → ${target.name || target.vehicle_id}` : 'RELEASE';
+  }
+
+  if (missionItem.command === COMMAND.MAV_CMD_NAV_WAYPOINT) return 'WAYPOINT';
+  return String(missionItem.command_name || missionItem.kind || 'MISSION ITEM').toUpperCase();
+}
+
+function formatMissionMonitorActionPlan(actionPlan) {
+  if (!actionPlan || typeof actionPlan !== 'object') return 'UNKNOWN';
+  if (actionPlan.loaded === false) return 'NOT LOADED';
+  if (actionPlan.loaded === true) {
+    const count = actionPlan.action_count ?? actionPlan.actions?.length ?? actionPlan.pending_count ?? '-';
+    return `LOADED (${count})`;
+  }
+  return 'UNKNOWN';
+}
+
+function renderMissionMonitor() {
+  const el = document.getElementById('missionMonitorOverlay');
+  if (!el) return;
+
+  const vehicle = getSelectedVehicle();
+  const mission = getSelectedMission();
+  if (!vehicle || !mission) {
+    el.innerHTML = `
+      <div class="mission-monitor-title">
+        <span>미션 진행 상태</span>
+      </div>
+      <div class="mission-monitor-small">선택된 드론이 없습니다.</div>
+    `;
+    return;
+  }
+
+  const connection = getVehicleConnection(vehicle);
+  const missionProgress = connection.mission_progress || {};
+  const isCarrier = isCarrierConnection(connection, vehicle);
+  const rows = [
+    ['현재 목표', getMissionMonitorItemLabel(missionProgress.current_seq, mission, vehicle)],
+    ['도달 완료 목표', getMissionMonitorItemLabel(missionProgress.last_reached_seq, mission, vehicle)],
+    ['Armed', formatMissionMonitorBool(missionProgress.armed)],
+    ['Mode', missionProgress.flight_mode || '-'],
+  ];
+
+  let detail = '';
+  if (isCarrier) {
+    rows.push(['릴리즈 상태', connection.release_state || 'UNKNOWN']);
+    rows.push(['트리거 피드백', connection.last_trigger_state || 'UNKNOWN']);
+    rows.push(['Action Plan', formatMissionMonitorActionPlan(connection.action_plan)]);
+    detail = `Reason: ${connection.last_trigger_reason || '-'} / Target: ${connection.last_trigger_target_vehicle_id || '-'}`;
+  } else {
+    rows.push(['트리거 동작여부', formatMissionMonitorBool(connection.trigger_feedback_ok)]);
+    detail = `Forwarded: ${formatMissionMonitorBool(connection.trigger_forwarded_ok)} / Last: ${connection.last_trigger_state || 'UNKNOWN'} / Reason: ${connection.last_trigger_reason || '-'}`;
+  }
+
+  el.innerHTML = `
+    <div class="mission-monitor-title">
+      <span>미션 진행 상태</span>
+      <span class="mission-monitor-subtitle">${escapeHtml(formatVehicleRole(vehicle.role))}</span>
+    </div>
+    <div class="mission-monitor-grid">
+      ${rows.map(([label, value]) => `
+        <div class="mission-monitor-row">
+          <div class="mission-monitor-label">${escapeHtml(label)}</div>
+          <div class="mission-monitor-value" title="${escapeHtml(String(value))}">${escapeHtml(String(value))}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="mission-monitor-small">${escapeHtml(detail)}</div>
+  `;
 }
 
 function renderRuntimeConnection() {
@@ -2519,8 +2672,14 @@ function normalizeCarrierStepKind(kind) {
   return 'waypoint';
 }
 
+function normalizeChildStepKind(kind) {
+  const normalized = String(kind || '').toLowerCase();
+  if (normalized === 'takeoff') return 'takeoff';
+  if (normalized === 'land') return 'land';
+  return 'waypoint';
+}
+
 function getCarrierStepType(waypoint, vehicle, index) {
-  if (isChildVehicle(vehicle)) return index === 0 ? 'handoff' : 'mission';
   return normalizeCarrierStepKind(waypoint?.kind || getWaypointKind(vehicle, index));
 }
 
@@ -2557,14 +2716,15 @@ function clearReleaseFields(waypoint) {
 }
 
 function getWaypointKind(vehicle, index) {
-  if (isChildVehicle(vehicle) && index === 0) return 'handoff';
+  if (isChildVehicle(vehicle)) return 'waypoint';
   if (!isChildVehicle(vehicle) && index === 0 && state.qgcPlanSettings.useFirstAsTakeoff) return 'takeoff';
-  return isChildVehicle(vehicle) ? 'mission' : 'waypoint';
+  return 'waypoint';
 }
 
 function getWaypointCommand(vehicle, index, waypoint = null) {
-  if (isChildVehicle(vehicle)) return 'NAV_WAYPOINT';
-  const kind = getCarrierStepType(waypoint, vehicle, index);
+  const kind = isChildVehicle(vehicle)
+    ? normalizeChildStepKind(waypoint?.kind || getWaypointKind(vehicle, index))
+    : getCarrierStepType(waypoint, vehicle, index);
   if (kind === 'takeoff') return 'NAV_TAKEOFF';
   if (kind === 'land') return 'NAV_LAND';
   return 'NAV_WAYPOINT';
@@ -2583,7 +2743,7 @@ function applyWaypointMetadata(mission, vehicle) {
   mission.mission_profile = getMissionProfile(vehicle);
   mission.waypoints.forEach((waypoint, index) => {
     if (isChildVehicle(vehicle)) {
-      waypoint.kind = getWaypointKind(vehicle, index);
+      waypoint.kind = normalizeChildStepKind(waypoint.kind || getWaypointKind(vehicle, index));
     } else {
       waypoint.kind = normalizeCarrierStepKind(waypoint.kind || getWaypointKind(vehicle, index));
     }
@@ -2592,6 +2752,53 @@ function applyWaypointMetadata(mission, vehicle) {
     clearReleaseFields(waypoint);
     waypoint.command = getWaypointCommand(vehicle, index, waypoint);
   });
+}
+
+function assignFcMissionSeqs(mission, vehicle) {
+  if (!mission || !vehicle) return;
+  applyWaypointMetadata(mission, vehicle);
+  mission.waypoints.forEach((waypoint, index) => {
+    waypoint.fcMissionSeq = index;
+  });
+}
+
+function buildFcMissionItems(mission, vehicle) {
+  if (!mission || !vehicle) return [];
+  assignFcMissionSeqs(mission, vehicle);
+  return mission.waypoints.map((waypoint, index) => ({
+    seq: waypoint.fcMissionSeq,
+    waypoint,
+    kind: waypoint.kind,
+    alt_reference: waypoint.alt_reference,
+    command_name: waypoint.command,
+    command: getMavCommandForWaypoint(vehicle, index, waypoint),
+    frame: COMMAND.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+    current: index === 0 ? 1 : 0,
+    autocontinue: 1,
+    param1: 0,
+    param2: 0,
+    param3: 0,
+    param4: null,
+    x: Number(waypoint.lat),
+    y: Number(waypoint.lon),
+    z: Number(waypoint.alt),
+    action: waypoint.action || 'NONE',
+  }));
+}
+
+function nearlyEqualNumber(a, b, epsilon = 1e-7) {
+  return Number.isFinite(Number(a)) &&
+    Number.isFinite(Number(b)) &&
+    Math.abs(Number(a) - Number(b)) <= epsilon;
+}
+
+function findFcMissionItemForReleaseWaypoint(waypoint, fcMissionItems) {
+  return fcMissionItems.find((item) =>
+    item.command === COMMAND.MAV_CMD_NAV_WAYPOINT &&
+    nearlyEqualNumber(item.x, waypoint.lat) &&
+    nearlyEqualNumber(item.y, waypoint.lon) &&
+    nearlyEqualNumber(item.z, waypoint.alt, 1e-3)
+  ) || null;
 }
 
 function getDistanceMeters(a, b) {
@@ -2608,27 +2815,54 @@ function getDistanceMeters(a, b) {
 
 function getReleaseWaypoints(mission, vehicle) {
   if (!mission || !vehicle || isChildVehicle(vehicle)) return [];
-  applyWaypointMetadata(mission, vehicle);
-  return mission.waypoints.filter((waypoint) => waypoint.kind === 'release');
+  assignFcMissionSeqs(mission, vehicle);
+  return mission.waypoints.filter((waypoint, index) =>
+    waypoint.kind === 'release' &&
+    getMavCommandForWaypoint(vehicle, index, waypoint) === COMMAND.MAV_CMD_NAV_WAYPOINT
+  );
 }
 
 function buildCarrierActionPlanPayload(mission, vehicle) {
   if (!mission || !vehicle || isChildVehicle(vehicle)) return null;
-  applyWaypointMetadata(mission, vehicle);
+  const fcMissionItems = buildFcMissionItems(mission, vehicle);
   const vehiclesById = new Map(getVehicles().map((item) => [item.vehicle_id, item]));
   const actions = getReleaseWaypoints(mission, vehicle).map((waypoint) => {
     const target = vehiclesById.get(waypoint.target_vehicle_id);
+    const matchedFcItem = findFcMissionItemForReleaseWaypoint(waypoint, fcMissionItems);
+    const fcMissionSeq = matchedFcItem?.seq;
     const release = { ...DEFAULT_RELEASE_ACTUATOR };
     const trigger = {
       ...DEFAULT_RELEASE_TRIGGER,
       ...(waypoint.trigger || {}),
       target_ip: target?.ip || '',
-      target_port: target?.udp_port || null,
+      target_port: Number(target?.udp_port) || 50051,
     };
 
+    console.debug('[action plan release seq]', {
+      vehicle_id: vehicle.vehicle_id,
+      mission_id: mission.mission_id,
+      displaySeq: waypoint.seq,
+      waypointKind: waypoint.kind,
+      waypointCommand: waypoint.command,
+      waypointLat: Number(waypoint.lat),
+      waypointLon: Number(waypoint.lon),
+      waypointAlt: Number(waypoint.alt),
+      matchedFcSeq: fcMissionSeq,
+      matchedFcCommand: matchedFcItem?.command,
+      matchedFcKind: matchedFcItem?.kind,
+      fcMissionItems: fcMissionItems.map((item) => ({
+        seq: item.seq,
+        command: item.command,
+        kind: item.kind,
+        x: item.x,
+        y: item.y,
+        z: item.z,
+      })),
+    });
+
     return {
-      action_id: `${vehicle.vehicle_id}_seq${waypoint.seq}_release_${waypoint.target_vehicle_id || 'unassigned'}`,
-      trigger_waypoint_seq: Number(waypoint.seq),
+      action_id: `wp_${fcMissionSeq ?? 'unmatched'}_release_${waypoint.target_vehicle_id || 'unassigned'}`,
+      trigger_waypoint_seq: fcMissionSeq,
       target_vehicle_id: waypoint.target_vehicle_id || '',
       type: 'RELEASE_AND_TRIGGER_CHILD',
       release,
@@ -2650,6 +2884,7 @@ function validateCarrierActionPlan(mission, vehicle) {
   if (!mission || !vehicle || isChildVehicle(vehicle)) return { errors, warnings };
 
   applyWaypointMetadata(mission, vehicle);
+  const fcMissionItems = buildFcMissionItems(mission, vehicle);
   const vehiclesById = new Map(getVehicles().map((item) => [item.vehicle_id, item]));
   const releaseWaypoints = getReleaseWaypoints(mission, vehicle);
   const takeoffIndex = mission.waypoints.findIndex((waypoint) => waypoint.kind === 'takeoff');
@@ -2664,6 +2899,10 @@ function validateCarrierActionPlan(mission, vehicle) {
     if (!Number.isFinite(Number(waypoint.lat)) || !Number.isFinite(Number(waypoint.lon)) || !Number.isFinite(Number(waypoint.alt))) {
       errors.push(`WP${waypoint.seq}: RELEASE lat/lon/alt가 필요합니다.`);
     }
+    const matchedFcItem = findFcMissionItemForReleaseWaypoint(waypoint, fcMissionItems);
+    if (!matchedFcItem) {
+      errors.push(`WP${waypoint.seq}: RELEASE 좌표와 일치하는 FC NAV_WAYPOINT item을 찾을 수 없습니다.`);
+    }
     if (landIndex >= 0 && index > landIndex) {
       errors.push(`WP${waypoint.seq}: RELEASE item이 LAND 이후에 있습니다.`);
     }
@@ -2675,6 +2914,12 @@ function validateCarrierActionPlan(mission, vehicle) {
         errors.push(`WP${waypoint.seq}: target child ${waypoint.target_vehicle_id}를 찾을 수 없습니다.`);
       } else if (normalizeVehicleRole(target.role) !== 'child') {
         errors.push(`WP${waypoint.seq}: target ${waypoint.target_vehicle_id} role이 child가 아닙니다.`);
+      } else {
+        if (!target.ip) errors.push(`WP${waypoint.seq}: target child ${waypoint.target_vehicle_id} IP가 없습니다.`);
+        const targetPort = Number(target.udp_port);
+        if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+          errors.push(`WP${waypoint.seq}: target child ${waypoint.target_vehicle_id} UDP port가 유효하지 않습니다.`);
+        }
       }
       if (seenTargets.has(waypoint.target_vehicle_id)) {
         warnings.push(`WP${waypoint.seq}: 같은 child ${waypoint.target_vehicle_id}가 여러 RELEASE item에 지정되었습니다.`);
@@ -2694,6 +2939,15 @@ function validateCarrierActionPlan(mission, vehicle) {
       Number(release.reset_value) !== DEFAULT_RELEASE_ACTUATOR.reset_value
     ) {
       warnings.push(`WP${waypoint.seq}: release actuator 설정이 검증된 AUX1 기본값과 다릅니다.`);
+    }
+    if (Number(release.value) < -1.0 || Number(release.value) > 1.0) {
+      errors.push(`WP${waypoint.seq}: release value는 -1.0~1.0 범위여야 합니다.`);
+    }
+    if (Number(release.reset_value) < -1.0 || Number(release.reset_value) > 1.0) {
+      errors.push(`WP${waypoint.seq}: release reset_value는 -1.0~1.0 범위여야 합니다.`);
+    }
+    if (!Number.isFinite(Number(release.hold_ms)) || Number(release.hold_ms) < 0) {
+      errors.push(`WP${waypoint.seq}: release hold_ms는 0 이상이어야 합니다.`);
     }
     if (Number(waypoint.alt) < 5) {
       warnings.push(`WP${waypoint.seq}: release altitude가 낮습니다.`);
@@ -2725,16 +2979,9 @@ function validateMissionForVehicle(mission, vehicle) {
 
   if (isChildVehicle(vehicle)) {
     warnings.push('자드론 미션 고도는 지상 기준 고도가 아니라 공중 Home 기준 offset입니다.');
-    warnings.push('첫 자드론 waypoint는 TAKEOFF가 아니라 handoff NAV_WAYPOINT로 export됩니다.');
     const first = mission.waypoints[0];
-    if (getMavCommandForWaypoint(vehicle, 0) === COMMAND.MAV_CMD_NAV_TAKEOFF) {
-      errors.push('Child 첫 item은 TAKEOFF이면 안 됩니다.');
-    }
-    if (Number(first.alt) > 2) {
+    if (getMavCommandForWaypoint(vehicle, 0, first) !== COMMAND.MAV_CMD_NAV_TAKEOFF && Number(first.alt) > 2) {
       warnings.push('Child WP1 altitude offset이 2m보다 큽니다. 초기 테스트는 0~1m를 권장합니다.');
-    }
-    if (mission.waypoints.length === 1) {
-      warnings.push('Child WP1은 handoff waypoint입니다. 실제 이동 검증은 WP2부터 권장합니다.');
     }
     if (mission.waypoints.length >= 2) {
       const distance = getDistanceMeters(mission.waypoints[0], mission.waypoints[1]);
@@ -2838,15 +3085,17 @@ function renderWaypointRows() {
     return;
   }
 
-  applyWaypointMetadata(mission, vehicle);
+  assignFcMissionSeqs(mission, vehicle);
 
   mission.waypoints.forEach((wp, idx) => {
     const tr = document.createElement('tr');
     const isCarrier = !isChildVehicle(vehicle);
     const childOptions = getChildVehiclesForCarrier(vehicle);
+    const commandLabel = getWaypointCommand(vehicle, idx, wp);
+    const commandValue = getMavCommandForWaypoint(vehicle, idx, wp);
 
     tr.innerHTML = `
-      <td>${wp.seq}<br><span class="hint">${escapeHtml(wp.kind || 'mission')}</span></td>
+      <td>${escapeHtml(wp.fcMissionSeq ?? idx)}<br><span class="hint">UI WP${escapeHtml(wp.seq)}</span></td>
       <td class="latlon">${wp.lat.toFixed(7)}<br>${wp.lon.toFixed(7)}</td>
       <td><input class="small" type="number" step="1" value="${wp.alt}" data-idx="${idx}" data-field="alt" /></td>
       <td class="action-cell"></td>
@@ -2889,17 +3138,27 @@ function renderWaypointRows() {
         `;
         actionCell.appendChild(details);
       } else {
-        const commandLabel = getWaypointCommand(vehicle, idx, wp);
-        const commandValue = getMavCommandForWaypoint(vehicle, idx, wp);
         const hint = document.createElement('div');
         hint.className = 'hint';
         hint.textContent = `FC export: ${commandLabel}/${commandValue}`;
         actionCell.appendChild(hint);
       }
     } else {
+      const stepSelect = document.createElement('select');
+      stepSelect.dataset.field = 'stepType';
+      stepSelect.dataset.idx = idx;
+      for (const stepType of CHILD_STEP_TYPES) {
+        const opt = document.createElement('option');
+        opt.value = stepType.toLowerCase();
+        opt.textContent = stepType;
+        if (wp.kind === opt.value) opt.selected = true;
+        stepSelect.appendChild(opt);
+      }
+      actionCell.appendChild(stepSelect);
+
       const hint = document.createElement('div');
       hint.className = 'hint';
-      hint.textContent = `${wp.command || 'NAV_WAYPOINT'} / ${wp.alt_reference || 'air_arm_home'}`;
+      hint.textContent = `FC export: ${commandLabel}/${commandValue} / ${wp.alt_reference || 'air_arm_home'}`;
       actionCell.appendChild(hint);
     }
     tbody.appendChild(tr);
@@ -2933,7 +3192,9 @@ function renderWaypointRows() {
     sel.addEventListener('change', (e) => {
       const idx = Number(e.target.dataset.idx);
       const waypoint = mission.waypoints[idx];
-      waypoint.kind = normalizeCarrierStepKind(e.target.value);
+      waypoint.kind = isChildVehicle(vehicle)
+        ? normalizeChildStepKind(e.target.value)
+        : normalizeCarrierStepKind(e.target.value);
       if (waypoint.kind === 'release') {
         ensureReleaseDefaults(waypoint, vehicle);
       } else {
@@ -3367,7 +3628,7 @@ function formatActionPlanRows(actionPlan) {
   }).join('');
 
   return `
-    <div class="hint" style="margin-top:10px;">Carrier ACTION_PLAN_UPLOAD dry-run</div>
+    <div class="hint" style="margin-top:10px;">Carrier ACTION_PLAN_UPLOAD preview</div>
     <table class="mission-result-table">
       <thead>
         <tr><th>Seq</th><th>Step Type</th><th>Target Child</th><th>FC Export Command</th><th>Release</th><th>Trigger Target</th><th>Validation</th></tr>
@@ -3483,7 +3744,7 @@ function sanityCheckMission(mission, vehicle = getSelectedVehicle()) {
 function buildMissionUploadPayload(mission, vehicle) {
   if (!mission || !vehicle) return null;
 
-  applyWaypointMetadata(mission, vehicle);
+  const fcMissionItems = buildFcMissionItems(mission, vehicle);
   const payload = {
     vehicle_id: vehicle.vehicle_id,
     vehicle_name: vehicle.name,
@@ -3491,24 +3752,7 @@ function buildMissionUploadPayload(mission, vehicle) {
     mission_id: mission.mission_id,
     mission_profile: getMissionProfile(vehicle),
     altitude_reference: getAltitudeReference(vehicle),
-    items: mission.waypoints.map((waypoint, index) => ({
-      seq: index,
-      kind: waypoint.kind,
-      alt_reference: waypoint.alt_reference,
-      command_name: waypoint.command,
-      command: getMavCommandForWaypoint(vehicle, index, waypoint),
-      frame: COMMAND.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-      current: index === 0 ? 1 : 0,
-      autocontinue: 1,
-      param1: 0,
-      param2: 0,
-      param3: 0,
-      param4: null,
-      x: Number(waypoint.lat),
-      y: Number(waypoint.lon),
-      z: Number(waypoint.alt),
-      action: waypoint.action || 'NONE',
-    })),
+    items: fcMissionItems.map(({ waypoint, ...item }) => item),
   };
 
   const actionPlan = buildCarrierActionPlanPayload(mission, vehicle);
@@ -3607,9 +3851,6 @@ function getDownloadedMissionItems(response) {
 
 function getWaypointKindFromReadbackItem(item, vehicle, index) {
   const command = Number(item.command);
-  if (isChildVehicle(vehicle)) {
-    return index === 0 ? 'handoff' : 'mission';
-  }
   if (command === COMMAND.MAV_CMD_NAV_TAKEOFF) return 'takeoff';
   if (command === COMMAND.MAV_CMD_NAV_LAND) return 'land';
   return 'waypoint';
@@ -3714,18 +3955,99 @@ async function validateSelectedMission() {
   }
 }
 
-async function uploadActionPlanDryRun() {
+async function uploadActionPlan() {
   const mission = getSelectedMission();
   const vehicle = getSelectedVehicle();
+  const seq = Date.now();
   if (!mission || !vehicle) {
-    alert('Upload Action Plan 불가: vehicle을 먼저 선택하세요.');
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = { ok: false, accepted: false, reason: 'vehicle_not_selected', seq };
+    renderCompanionTestPrep();
     return;
   }
   if (isChildVehicle(vehicle)) {
-    alert('Upload Action Plan은 Carrier vehicle에서만 사용할 수 있습니다.');
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = { ok: false, accepted: false, reason: 'selected_vehicle_not_carrier', seq };
+    renderCompanionTestPrep();
     return;
   }
-  await validateSelectedMission();
+
+  if (!saveConnectionForm({ persist: false })) return;
+  saveBackendUrl();
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = { ok: false, accepted: false, reason: 'backend_not_online', seq };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const saved = await saveVehicleConfigs({ silent: true });
+  if (!saved) {
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = { ok: false, accepted: false, reason: 'vehicle_config_save_failed', seq };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const validation = validateCarrierActionPlan(mission, vehicle);
+  if (validation.errors.length > 0) {
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = {
+      ok: false,
+      accepted: false,
+      reason: 'action_plan_validation_failed',
+      errors: validation.errors,
+      seq,
+    };
+    showMissionValidation(validation, buildMissionSummaryLines(mission, vehicle));
+    renderCompanionTestPrep();
+    return;
+  }
+
+  const actionPlan = buildCarrierActionPlanPayload(mission, vehicle);
+  const actions = actionPlan?.actions || [];
+  if (actions.length === 0) {
+    runtimeState.actionPlanUploadState = 'IDLE';
+    runtimeState.actionPlanUploadResult = {
+      ok: true,
+      accepted: false,
+      reason: 'no_waypoint_actions_configured',
+      seq,
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  runtimeState.actionPlanUploadState = 'SENDING';
+  runtimeState.actionPlanUploadResult = { ok: false, accepted: false, reason: 'sending', seq };
+  renderCompanionTestPrep();
+
+  try {
+    const responseBody = await postDroneCommand('/api/drone/action-plan-upload', {
+      vehicle_id: vehicle.vehicle_id,
+      mission_id: mission.mission_id,
+      actions,
+      seq,
+    });
+    runtimeState.actionPlanUploadResult = responseBody;
+    runtimeState.actionPlanUploadState = getActionPlanUploadStateFromResult(responseBody);
+    if (runtimeState.actionPlanUploadState === 'OK') {
+      showMissionOperationResult('Action Plan upload', responseBody, mission, vehicle);
+      await refreshDroneConnections({ silent: true });
+    }
+  } catch (error) {
+    runtimeState.actionPlanUploadState = 'FAILED';
+    runtimeState.actionPlanUploadResult = {
+      ok: false,
+      accepted: false,
+      reason: 'request_failed',
+      message: error.message,
+      seq,
+    };
+  } finally {
+    renderCompanionTestPrep();
+    renderRuntimeConnection();
+  }
 }
 
 async function uploadSelectedMission() {

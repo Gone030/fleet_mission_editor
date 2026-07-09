@@ -198,7 +198,66 @@
     .section.is-collapsed .collapsible-section-body {
       display: none;
     }
-    #map { width: 100%; height: 100%; background: #111827; }
+    #map { width: 100%; height: 100%; background: #111827; position: relative; }
+    .mission-monitor-overlay {
+      position: absolute;
+      right: 14px;
+      bottom: 18px;
+      z-index: 700;
+      width: min(320px, calc(100% - 28px));
+      max-height: 42%;
+      overflow: auto;
+      padding: 10px 12px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.88);
+      color: var(--text);
+      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32);
+      backdrop-filter: blur(8px);
+      pointer-events: auto;
+      font-size: 12px;
+    }
+    .mission-monitor-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .mission-monitor-subtitle {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 11px;
+    }
+    .mission-monitor-grid {
+      display: grid;
+      gap: 6px;
+    }
+    .mission-monitor-row {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+    }
+    .mission-monitor-label {
+      color: var(--muted);
+    }
+    .mission-monitor-value {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .mission-monitor-small {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
     .wp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .wp-table th, .wp-table td { border-bottom: 1px solid var(--line); padding: 6px 4px; vertical-align: middle; }
     .wp-table th { color: var(--muted); font-weight: 600; text-align: left; }

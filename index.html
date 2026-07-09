@@ -151,7 +151,9 @@
 
     </aside>
 
-    <main id="map"></main>
+    <main id="map">
+      <div id="missionMonitorOverlay" class="mission-monitor-overlay"></div>
+    </main>
 
     <div id="rightSidebarResizeHandle" class="sidebar-resize-handle" title="오른쪽 사이드바 크기 조절"></div>
 
@@ -204,10 +206,10 @@
         <table class="wp-table">
           <thead>
             <tr>
-              <th>#</th>
+              <th>FC seq</th>
               <th>좌표</th>
               <th id="waypointAltitudeHeader">고도</th>
-              <th>Step / Action</th>
+              <th>Command / Action</th>
               <th></th>
             </tr>
           </thead>
@@ -232,6 +234,7 @@
         </div>
         <div id="runtimeResetResult" class="hint runtime-message">Select a vehicle and connect backend before reset.</div>
         <div id="missionClearResult" class="hint runtime-message">Select a vehicle and connect backend before mission clear.</div>
+        <div id="actionPlanUploadResult" class="hint runtime-message">Configure RELEASE waypoint actions before action plan upload.</div>
         <div id="manualReleaseTriggerResult" class="hint runtime-message">
           Select a Carrier and connect backend before manual release trigger.
         </div>
