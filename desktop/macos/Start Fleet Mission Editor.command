@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$PROJECT_ROOT" || exit 1
 
 echo "Fleet Mission Editor"
@@ -16,9 +16,22 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+select_python() {
+  for candidate in /opt/homebrew/bin/python3 /usr/bin/python3 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+  command -v python3
+}
+
+BASE_PYTHON="$(select_python)"
+echo "Using Python: $BASE_PYTHON"
+
 if [ ! -d ".venv" ]; then
   echo "Creating .venv..."
-  python3 -m venv .venv
+  "$BASE_PYTHON" -m venv .venv
   if [ $? -ne 0 ]; then
     echo "ERROR: failed to create .venv."
     echo

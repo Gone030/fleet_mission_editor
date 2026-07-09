@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0\..\.."
 
 echo Fleet Mission Editor
 echo Project root: %CD%
