@@ -20,7 +20,7 @@ const runtimeState = {
   status: 'BACKEND OFFLINE',
   service: '',
   version: '',
-  message: 'Local runtime backend health check only. MAVLink, UDP companion, trigger send are not implemented here.',
+  message: 'Backend status, companion UDP status, mission control, trigger, and emergency actions are available when configured.',
   vehicleConnections: {},
   dronesConnecting: false,
   backendCheckInFlight: false,
