@@ -1,6 +1,110 @@
 {
-  "schemaVersion": 1,
-  "createdBy": "Fleet Mission Editor Skeleton",
+  "version": 1,
+  "vehicles": [
+    {
+      "vehicle_id": "carrier-01",
+      "name": "Carrier 01",
+      "role": "carrier",
+      "sysid": 1,
+      "ip": "192.168.0.101",
+      "udp_port": 14550,
+      "parent_vehicle_id": null,
+      "sort_order": 0,
+      "color": "#60a5fa",
+      "collapsed": false,
+      "firmware_profile": "px4_nav_ready_gate"
+    },
+    {
+      "vehicle_id": "child-01",
+      "name": "Child 01",
+      "role": "child",
+      "sysid": 11,
+      "ip": "192.168.0.111",
+      "udp_port": 14551,
+      "parent_vehicle_id": "carrier-01",
+      "sort_order": 0,
+      "color": "#34d399",
+      "collapsed": false,
+      "firmware_profile": "px4_nav_ready_gate"
+    }
+  ],
+  "missions": [
+    {
+      "mission_id": "mission_carrier-01",
+      "vehicle_id": "carrier-01",
+      "uploadState": "Editing",
+      "waypoints": [
+        {
+          "seq": 1,
+          "kind": "takeoff",
+          "lat": 36.3504,
+          "lon": 127.3845,
+          "alt": 30,
+          "alt_reference": "ground_home",
+          "command": "NAV_TAKEOFF",
+          "action": "NONE"
+        },
+        {
+          "seq": 2,
+          "kind": "release",
+          "lat": 36.352,
+          "lon": 127.386,
+          "alt": 30,
+          "alt_reference": "ground_home",
+          "command": "NAV_WAYPOINT",
+          "action": "RELEASE",
+          "target_vehicle_id": "child-01",
+          "release": {
+            "method": "MAV_CMD_DO_SET_ACTUATOR",
+            "actuator_index": 1,
+            "value": 0.4,
+            "hold_ms": 800,
+            "reset_value": -0.7
+          },
+          "trigger": {
+            "type": "CHILD_NAV_GATE_TRIGGER"
+          }
+        },
+        {
+          "seq": 3,
+          "kind": "land",
+          "lat": 36.3504,
+          "lon": 127.3845,
+          "alt": 0,
+          "alt_reference": "ground_home",
+          "command": "NAV_LAND",
+          "action": "NONE"
+        }
+      ]
+    },
+    {
+      "mission_id": "mission_child-01",
+      "vehicle_id": "child-01",
+      "uploadState": "Editing",
+      "waypoints": [
+        {
+          "seq": 1,
+          "kind": "waypoint",
+          "lat": 36.3522,
+          "lon": 127.3862,
+          "alt": 1,
+          "alt_reference": "air_arm_home",
+          "command": "NAV_WAYPOINT",
+          "action": "NONE"
+        },
+        {
+          "seq": 2,
+          "kind": "land",
+          "lat": 36.353,
+          "lon": 127.388,
+          "alt": 0,
+          "alt_reference": "air_arm_home",
+          "command": "NAV_LAND",
+          "action": "NONE"
+        }
+      ]
+    }
+  ],
   "qgcPlanSettings": {
     "firmwareType": 12,
     "vehicleType": 2,
@@ -8,32 +112,5 @@
     "cruiseSpeed": 15,
     "useFirstAsTakeoff": true,
     "globalPlanAltitudeMode": 1
-  },
-  "missions": {
-    "mother": {
-      "vehicleId": "mother",
-      "name": "Mother",
-      "role": "mother",
-      "connection": { "ip": "192.168.0.101", "port": 14550, "sysid": 1 },
-      "uploadState": "Editing",
-      "waypoints": [
-        { "seq": 1, "lat": 36.3504, "lon": 127.3845, "alt": 30, "command": "WAYPOINT", "action": "NONE" },
-        { "seq": 2, "lat": 36.3520, "lon": 127.3860, "alt": 30, "command": "WAYPOINT", "action": "RELEASE_CHILD_1" }
-      ]
-    },
-    "child1": {
-      "vehicleId": "child1",
-      "name": "Child 1",
-      "role": "child",
-      "connection": { "ip": "192.168.0.111", "port": 14551, "sysid": 11 },
-      "uploadState": "Editing",
-      "waypoints": [
-        { "seq": 1, "lat": 36.3522, "lon": 127.3862, "alt": 10, "command": "WAYPOINT", "action": "NONE" },
-        { "seq": 2, "lat": 36.3530, "lon": 127.3880, "alt": 10, "command": "WAYPOINT", "action": "NONE" }
-      ]
-    },
-    "child2": { "vehicleId": "child2", "name": "Child 2", "role": "child", "connection": { "ip": "192.168.0.112", "port": 14552, "sysid": 12 }, "uploadState": "Editing", "waypoints": [] },
-    "child3": { "vehicleId": "child3", "name": "Child 3", "role": "child", "connection": { "ip": "192.168.0.113", "port": 14553, "sysid": 13 }, "uploadState": "Editing", "waypoints": [] },
-    "child4": { "vehicleId": "child4", "name": "Child 4", "role": "child", "connection": { "ip": "192.168.0.114", "port": 14554, "sysid": 14 }, "uploadState": "Editing", "waypoints": [] }
   }
 }
