@@ -5,7 +5,7 @@ Fleet Mission Editor는 기존 `index.html` 직접 실행 방식과 별도로 `p
 ## 개발 실행
 
 ```bash
-cd src/fleet_mission_editor
+cd "/path/to/Fleet Mission Editor"
 python -m pip install -r backend/requirements.txt
 python desktop/launcher.py
 ```
@@ -15,7 +15,7 @@ python desktop/launcher.py
 기존 개발 방식도 유지된다.
 
 ```bash
-cd src/fleet_mission_editor
+cd "/path/to/Fleet Mission Editor"
 python -m uvicorn backend.server:app --host 127.0.0.1 --port 8000
 ```
 
@@ -54,7 +54,7 @@ desktop/macos/Build Fleet Mission Editor.command
 터미널에서 직접 실행할 수도 있다.
 
 ```bash
-cd src/fleet_mission_editor
+cd "/path/to/Fleet Mission Editor"
 chmod +x desktop/macos/build_desktop_mac.sh
 ./desktop/macos/build_desktop_mac.sh
 ```
@@ -64,7 +64,7 @@ chmod +x desktop/macos/build_desktop_mac.sh
 빌드 결과:
 
 ```text
-src/fleet_mission_editor/dist/FleetMissionEditor.app
+dist/FleetMissionEditor.app
 ```
 
 `FleetMissionEditor.app`을 더블클릭하면 backend와 UI가 함께 실행된다.
@@ -80,7 +80,7 @@ desktop\windows\Build Fleet Mission Editor.bat
 PowerShell에서 직접 실행할 수도 있다.
 
 ```powershell
-cd src\fleet_mission_editor
+Set-Location "C:\path\to\Fleet Mission Editor"
 powershell -ExecutionPolicy Bypass -File .\desktop\windows\build_desktop_windows.ps1
 ```
 
@@ -89,8 +89,8 @@ powershell -ExecutionPolicy Bypass -File .\desktop\windows\build_desktop_windows
 빌드 결과는 PyInstaller 설정과 환경에 따라 아래 중 하나다.
 
 ```text
-src/fleet_mission_editor/dist/FleetMissionEditor/FleetMissionEditor.exe
-src/fleet_mission_editor/dist/FleetMissionEditor.exe
+dist/FleetMissionEditor/FleetMissionEditor.exe
+dist/FleetMissionEditor.exe
 ```
 
 `FleetMissionEditor.exe`를 더블클릭하면 backend와 UI가 함께 실행된다.
@@ -116,7 +116,7 @@ OS별 실행/빌드 스크립트는 아래에 둔다.
 macOS:
 
 ```bash
-cd src/fleet_mission_editor
+cd "/path/to/Fleet Mission Editor"
 PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile backend/server.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile desktop/launcher.py
 node --check src/app.js
@@ -126,7 +126,7 @@ bash desktop/macos/build_desktop_mac.sh
 Windows:
 
 ```powershell
-cd src\fleet_mission_editor
+Set-Location "C:\path\to\Fleet Mission Editor"
 python -m py_compile backend/server.py
 python -m py_compile desktop/launcher.py
 node --check src/app.js

@@ -48,6 +48,13 @@ Carrier-01
 * 선택된 vehicle의 QGC `.plan` export
 * Carrier waypoint를 RELEASE step으로 지정하고 target Child 선택
 * QGC Plan 설정 편집
+* mission local/backend validation
+* 선택 vehicle의 FC mission upload 및 read-back 검증
+* FC mission read-back 결과를 UI waypoint로 불러오기
+* FC mission clear
+* Carrier action plan upload
+* Carrier Mission Start 확인 및 실행
+* companion runtime state reset
 * Local Runtime Backend health check 연결 패널
 * backend 자동 health monitor
 * Local Runtime Backend를 통한 companion UDP PING/PONG 연결 확인
@@ -62,14 +69,15 @@ Carrier-01
   * `DISARM`
   * `FORCE_DISARM`
 * 간단한 local sanity check
+* Carrier-Child companion link test
+* Carrier manual release + trigger 실행
 
 ## 아직 지원하지 않는 기능
 
-* UI에서 FC mission upload 직접 실행
-* FC mission read-back 검증
 * 여러 vehicle mission 동시 upload
 * QGC `.plan` import
 * WebSocket 기반 realtime streaming
+* backend의 FC 직접 MAVLink 연결
 
 ## 실행 방법
 
@@ -141,7 +149,21 @@ PUT  /api/vehicles
 POST /api/drones/connect
 GET  /api/drones/status
 POST /api/drones/{vehicle_id}/emergency
+POST /api/drones/{vehicle_id}/manual-release-trigger
+POST /api/drone/runtime-reset
+POST /api/drone/mission-clear
+POST /api/drone/mission-start
+POST /api/drone/action-plan-upload
+POST /api/companion/link-test
+POST /api/missions/validate
+POST /api/missions/upload-dry-run
+POST /api/missions/upload
+POST /api/missions/download
+POST /api/missions/upload-and-verify
 ```
+
+`/api/runtime/status`는 현재 legacy 진단 응답으로 `mock`/`not_implemented` 값을 반환하며 UI에서는 사용하지 않는다.
+실제 연결 상태는 `/api/health`와 `/api/drones/status`를 기준으로 표시한다.
 
 `/api/vehicles`는 vehicle config만 저장한다.
 runtime status, GPS position, emergency result, trigger state는 저장하지 않는다.
@@ -203,7 +225,8 @@ connection lost, GPS invalid, trigger 실패 등으로 자동 실행하지 않�
 
 ## 개발 원칙
 
-`npm`, `React`, `Vite`, bundler, build tool을 도입하지 않는다.
+프런트엔드는 `npm`, `React`, `Vite`, bundler 없이 정적 HTML/CSS/JavaScript 구조를 유지한다.
+데스크톱 배포본은 `pywebview + PyInstaller`로 빌드한다.
 
 아래 구조를 유지한다.
 
@@ -241,9 +264,10 @@ fleet-mission-editor/
 5. Connect Drones 또는 자동 polling으로 companion 상태 확인
 6. 지도 클릭으로 waypoint 생성
 7. Carrier release 지점은 waypoint 목록에서 RELEASE로 변경하고 target Child 선택
-8. 선택 vehicle의 `.plan` export
-9. QGroundControl에서 `.plan` 열기
-10. runtime 상태, live GPS marker, emergency action은 backend UI에서 확인/실행
+8. 미션 검증 후 FC 미션 업로드 및 read-back 검증
+9. Carrier는 액션 플랜 업로드 후 Mission Start 준비 상태 확인
+10. 필요하면 선택 vehicle의 `.plan`을 export하여 QGroundControl에서 확인
+11. runtime 상태, live GPS marker, emergency action은 backend UI에서 확인/실행
 ```
 
 ## 데이터 구조 요약
