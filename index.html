@@ -81,6 +81,16 @@
           <label for="connName">Name</label>
           <input id="connName" />
         </div>
+        <details class="vehicle-id-settings">
+          <summary>고급 설정: Vehicle ID 수정</summary>
+          <div class="vehicle-id-settings-body">
+            <label for="connVehicleId">Vehicle ID</label>
+            <input id="connVehicleId" />
+            <div class="hint" style="margin-top:6px;">
+              companion의 vehicle_id와 반드시 같아야 합니다. 변경 시 mission, parent/child, RELEASE target 참조가 함께 갱신됩니다.
+            </div>
+          </div>
+        </details>
         <div class="grid2">
           <div>
             <label for="connRole">Role</label>

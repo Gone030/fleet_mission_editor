@@ -22,6 +22,7 @@ const runtimeState = {
   version: '',
   message: 'Backend status, companion UDP status, mission control, trigger, and emergency actions are available when configured.',
   vehicleConnections: {},
+  lastTriggerSeenAtMs: {},
   dronesConnecting: false,
   backendCheckInFlight: false,
   healthMonitorId: null,
@@ -780,7 +781,7 @@ function renderVehicleTree(list, vehicle, depth) {
 
 function renderConnectionForm() {
   const vehicle = getSelectedVehicle();
-  const ids = ['connName', 'connIp', 'connPort', 'connSysid', 'connRole', 'connFirmwareProfile'];
+  const ids = ['connVehicleId', 'connName', 'connIp', 'connPort', 'connSysid', 'connRole', 'connFirmwareProfile'];
   const saveButton = document.getElementById('saveConnBtn');
 
   if (!vehicle) {
@@ -794,6 +795,7 @@ function renderConnectionForm() {
     return;
   }
 
+  document.getElementById('connVehicleId').value = vehicle.vehicle_id;
   document.getElementById('connName').value = vehicle.name;
   document.getElementById('connIp').value = vehicle.ip;
   document.getElementById('connPort').value = vehicle.udp_port;
@@ -809,6 +811,7 @@ function renderConnectionForm() {
 
 function getConnectionFormValues() {
   return {
+    vehicle_id: document.getElementById('connVehicleId').value.trim(),
     name: document.getElementById('connName').value.trim(),
     role: normalizeVehicleRole(document.getElementById('connRole').value),
     firmware_profile: document.getElementById('connFirmwareProfile').value,
@@ -821,6 +824,10 @@ function getConnectionFormValues() {
 function validateVehicleConnectionValues(values, label = 'Selected vehicle') {
   const warnings = [];
 
+  if (!values.vehicle_id) warnings.push(`${label}: vehicle_id를 입력하세요.`);
+  if (values.vehicle_id && !/^[A-Za-z0-9_-]+$/.test(values.vehicle_id)) {
+    warnings.push(`${label}: vehicle_id는 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.`);
+  }
   if (!values.name) warnings.push(`${label}: name을 입력하세요.`);
   if (!VEHICLE_ROLES.includes(values.role)) warnings.push(`${label}: role은 carrier 또는 child여야 합니다.`);
   if (!values.ip) warnings.push(`${label}: IP가 비어 있습니다.`);
@@ -840,6 +847,7 @@ function validateVehicleConnectionValues(values, label = 'Selected vehicle') {
 function validateVehicleForRuntime(vehicle) {
   return validateVehicleConnectionValues(
     {
+      vehicle_id: String(vehicle.vehicle_id || '').trim(),
       name: String(vehicle.name || '').trim(),
       role: normalizeVehicleRole(vehicle.role),
       firmware_profile: vehicle.firmware_profile,
@@ -867,6 +875,61 @@ function validateAllVehicleConnections() {
   return getVehicles().flatMap(validateVehicleForRuntime);
 }
 
+function migrateVehicleId(oldVehicleId, newVehicleId) {
+  if (!oldVehicleId || !newVehicleId || oldVehicleId === newVehicleId) return;
+
+  if (state.selectedVehicleId === oldVehicleId) {
+    state.selectedVehicleId = newVehicleId;
+  }
+  if (runtimeState.missionResultVehicleId === oldVehicleId) {
+    runtimeState.missionResultVehicleId = newVehicleId;
+  }
+
+  for (const vehicle of state.vehicles) {
+    if (vehicle.vehicle_id === oldVehicleId) {
+      vehicle.vehicle_id = newVehicleId;
+    }
+    if (vehicle.parent_vehicle_id === oldVehicleId) {
+      vehicle.parent_vehicle_id = newVehicleId;
+    }
+  }
+
+  for (const mission of state.missions) {
+    if (mission.vehicle_id === oldVehicleId) {
+      mission.vehicle_id = newVehicleId;
+      if (!mission.mission_id || mission.mission_id === `mission_${oldVehicleId}`) {
+        mission.mission_id = `mission_${newVehicleId}`;
+      }
+    }
+    for (const waypoint of mission.waypoints || []) {
+      if (waypoint.target_vehicle_id === oldVehicleId) {
+        waypoint.target_vehicle_id = newVehicleId;
+      }
+      if (waypoint.trigger?.target_vehicle_id === oldVehicleId) {
+        waypoint.trigger.target_vehicle_id = newVehicleId;
+      }
+    }
+  }
+
+  if (runtimeState.vehicleConnections[oldVehicleId]) {
+    runtimeState.vehicleConnections[newVehicleId] = {
+      ...runtimeState.vehicleConnections[oldVehicleId],
+      vehicle_id: newVehicleId,
+    };
+    delete runtimeState.vehicleConnections[oldVehicleId];
+  }
+  if (runtimeState.lastTriggerSeenAtMs[oldVehicleId]) {
+    runtimeState.lastTriggerSeenAtMs[newVehicleId] = runtimeState.lastTriggerSeenAtMs[oldVehicleId];
+    delete runtimeState.lastTriggerSeenAtMs[oldVehicleId];
+  }
+
+  const marker = liveDroneMarkers.get(oldVehicleId);
+  if (marker) {
+    liveDroneMarkers.set(newVehicleId, marker);
+    liveDroneMarkers.delete(oldVehicleId);
+  }
+}
+
 function saveConnectionForm({ silent = false, persist = true } = {}) {
   const vehicle = getSelectedVehicle();
   if (!vehicle) {
@@ -878,18 +941,35 @@ function saveConnectionForm({ silent = false, persist = true } = {}) {
 
   const values = getConnectionFormValues();
   const warnings = validateVehicleConnectionValues(values, vehicle.name || vehicle.vehicle_id);
+  const oldVehicleId = vehicle.vehicle_id;
+  const newVehicleId = values.vehicle_id;
+  if (
+    newVehicleId !== oldVehicleId &&
+    getVehicles().some((item) => item.vehicle_id === newVehicleId)
+  ) {
+    warnings.push(`${vehicle.name || oldVehicleId}: vehicle_id "${newVehicleId}"가 이미 존재합니다.`);
+  }
   if (warnings.length > 0) {
     showConnectionWarning(warnings);
     if (!silent) alert('Connection 설정을 저장할 수 없습니다:\n- ' + warnings.join('\n- '));
     return false;
   }
 
-  vehicle.name = values.name;
-  vehicle.role = normalizeVehicleRole(values.role);
-  vehicle.firmware_profile = values.firmware_profile;
-  vehicle.sysid = values.sysid;
-  vehicle.ip = values.ip;
-  vehicle.udp_port = values.udp_port;
+  migrateVehicleId(oldVehicleId, newVehicleId);
+  const updatedVehicle = getVehicleById(newVehicleId);
+  if (!updatedVehicle) {
+    const migrationWarnings = [`Vehicle ID migration failed: ${oldVehicleId} → ${newVehicleId}`];
+    showConnectionWarning(migrationWarnings);
+    if (!silent) alert(migrationWarnings[0]);
+    return false;
+  }
+
+  updatedVehicle.name = values.name;
+  updatedVehicle.role = normalizeVehicleRole(values.role);
+  updatedVehicle.firmware_profile = values.firmware_profile;
+  updatedVehicle.sysid = values.sysid;
+  updatedVehicle.ip = values.ip;
+  updatedVehicle.udp_port = values.udp_port;
   clearConnectionWarning();
 
   renderAll();
@@ -2251,6 +2331,15 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     getDroneStatusValue(result, 'fc_connected'),
     existing.fc_connected || 'UNKNOWN'
   );
+  const lastTriggerSeq = getDroneStatusValue(result, 'last_trigger_seq', existing.last_trigger_seq ?? null);
+  if (
+    lastTriggerSeq !== null &&
+    lastTriggerSeq !== undefined &&
+    lastTriggerSeq !== '' &&
+    String(lastTriggerSeq) !== String(existing.last_trigger_seq ?? '')
+  ) {
+    runtimeState.lastTriggerSeenAtMs[vehicleId] = now;
+  }
   return {
     ...existing,
     vehicle_id: vehicleId,
@@ -2276,7 +2365,7 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     trigger_forwarded_ok: getDroneStatusValue(result, 'trigger_forwarded_ok', existing.trigger_forwarded_ok ?? null),
     release_state: getDroneStatusValue(result, 'release_state', existing.release_state ?? null),
     trigger_state: getDroneStatusValue(result, 'trigger_state', existing.trigger_state || 'UNKNOWN'),
-    last_trigger_seq: getDroneStatusValue(result, 'last_trigger_seq', existing.last_trigger_seq ?? null),
+    last_trigger_seq: lastTriggerSeq,
     last_trigger_state: getDroneStatusValue(result, 'last_trigger_state', existing.last_trigger_state || 'UNKNOWN'),
     last_trigger_reason: getDroneStatusValue(result, 'last_trigger_reason', existing.last_trigger_reason ?? null),
     last_trigger_relationship_id: getDroneStatusValue(result, 'last_trigger_relationship_id', existing.last_trigger_relationship_id ?? null),
@@ -2338,6 +2427,7 @@ function applyDroneStatusResults(results) {
   renderEmergencyControls();
   renderCompanionTestPrep();
   renderMissionMonitor();
+  renderRuntimeConnection();
 }
 
 function normalizeDroneStatusResponse(responseBody) {
@@ -2626,6 +2716,34 @@ function formatMissionMonitorActionPlan(actionPlan) {
   return 'UNKNOWN';
 }
 
+function getRelativeAgeLabel(timestampMs) {
+  if (!timestampMs) return '-';
+  const ageMs = Date.now() - Number(timestampMs);
+  if (!Number.isFinite(ageMs) || ageMs < 0) return '-';
+  if (ageMs < 1500) return '방금 전';
+  if (ageMs < 60000) return `${Math.round(ageMs / 1000)}초 전`;
+  if (ageMs < 3600000) return `${Math.round(ageMs / 60000)}분 전`;
+  return `${Math.round(ageMs / 3600000)}시간 전`;
+}
+
+function formatTriggerResultLabel(state) {
+  if (state === 'FORWARDED_TO_FC') return 'FC 전달 완료';
+  if (state === 'FC_TRIGGER_FAILED') return 'FC 전달 실패';
+  if (state === 'TRIGGER_RECEIVED') return '트리거 수신';
+  if (state === 'CHILD_REJECTED_TRIGGER') return '자드론 거부';
+  if (state === 'PENDING_CHILD_ACK') return '자드론 ACK 대기';
+  if (!state || state === 'UNKNOWN') return '기록 없음';
+  return state;
+}
+
+function formatRecentTrigger(connection, vehicleId) {
+  if (!connection?.last_trigger_seq) return '기록 없음';
+  const seenAt = runtimeState.lastTriggerSeenAtMs[vehicleId] || connection.last_trigger_completed_ms;
+  const age = getRelativeAgeLabel(seenAt);
+  const result = formatTriggerResultLabel(connection.last_trigger_state);
+  return age === '-' ? result : `${result} · ${age}`;
+}
+
 function renderMissionMonitor() {
   const el = document.getElementById('missionMonitorOverlay');
   if (!el) return;
@@ -2765,7 +2883,7 @@ function renderRuntimeConnection() {
       );
     } else {
       detailLines.push(
-        ['Trigger Receive', connection.trigger_state || 'UNKNOWN'],
+        ['최근 트리거', formatRecentTrigger(connection, vehicle.vehicle_id)],
         ['FC Forward Result', connection.last_trigger_state || 'UNKNOWN'],
         ['Reason', connection.last_trigger_reason || connection.reason || '-'],
         ['Seq', formatRuntimeValue(connection.last_trigger_seq)]

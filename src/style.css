@@ -204,6 +204,27 @@
       border-radius: 10px;
       background: rgba(15, 23, 42, 0.28);
     }
+    .vehicle-id-settings {
+      margin-top: 8px;
+      margin-bottom: 8px;
+      border: 1px solid rgba(251, 191, 36, 0.25);
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.22);
+    }
+    .vehicle-id-settings summary {
+      cursor: pointer;
+      user-select: none;
+      padding: 8px 10px;
+      color: var(--warn);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .vehicle-id-settings[open] summary {
+      border-bottom: 1px solid rgba(251, 191, 36, 0.18);
+    }
+    .vehicle-id-settings-body {
+      padding: 10px;
+    }
     .qgc-export-settings summary {
       cursor: pointer;
       user-select: none;
