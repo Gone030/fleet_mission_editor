@@ -31,6 +31,9 @@ const runtimeState = {
   consecutiveDronePollingFailures: 0,
   emergencyInFlight: false,
   emergencyResult: null,
+  debugChildKillInFlight: false,
+  debugChildKillResult: null,
+  debugChildKillTargetVehicleId: null,
   manualReleaseTriggerState: 'IDLE',
   manualReleaseTriggerResult: null,
   runtimeResetState: 'IDLE',
@@ -320,6 +323,7 @@ onElement('resetBtn', 'click', () => {
 onElement('saveConnBtn', 'click', saveConnectionForm);
 onElement('executeEmergencyBtn', 'click', executeEmergencyAction);
 onElement('manualReleaseTriggerBtn', 'click', executeManualReleaseTrigger);
+onElement('debugChildKillBtn', 'click', executeDebugChildKill);
 onElement('resetRuntimeStateBtn', 'click', resetRuntimeState);
 onElement('clearFcMissionBtn', 'click', clearFcMission);
 onElement('uploadActionPlanBtn', 'click', uploadActionPlan);
@@ -1011,6 +1015,8 @@ function renderCompanionTestPrep() {
   const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
   const manualButton = document.getElementById('manualReleaseTriggerBtn');
   const manualResultBox = document.getElementById('manualReleaseTriggerResult');
+  const debugKillButton = document.getElementById('debugChildKillBtn');
+  const debugKillResultBox = document.getElementById('debugChildKillResult');
   const resetButton = document.getElementById('resetRuntimeStateBtn');
   const resetResultBox = document.getElementById('runtimeResetResult');
   const clearButton = document.getElementById('clearFcMissionBtn');
@@ -1068,6 +1074,30 @@ function renderCompanionTestPrep() {
       manualResultBox.textContent = `Ready: ${vehicle.vehicle_id} → ${manualTarget.vehicle_id} using AUX1 actuator release.`;
     } else {
       manualResultBox.textContent = 'Backend must be online before manual release trigger.';
+    }
+  }
+
+  if (debugKillButton && debugKillResultBox) {
+    const pinnedTarget = getVehicles().find(
+      (item) => item.vehicle_id === runtimeState.debugChildKillTargetVehicleId
+    );
+    const killTarget = pinnedTarget || manualTarget;
+    const isBusy = runtimeState.debugChildKillInFlight;
+    debugKillButton.disabled = !isCarrier || !killTarget || !backendOnline || isBusy;
+    debugKillButton.textContent = isBusy
+      ? `${killTarget?.vehicle_id || 'Child'} Force Disarm 전송 중...`
+      : `${killTarget?.vehicle_id || '대상 자드론'} 킬스위치 (Force Disarm)`;
+
+    if (runtimeState.debugChildKillResult) {
+      debugKillResultBox.textContent = formatEmergencyResult(runtimeState.debugChildKillResult);
+    } else if (!vehicle || !isCarrier) {
+      debugKillResultBox.textContent = 'Select a Carrier before using the Child kill switch.';
+    } else if (!killTarget) {
+      debugKillResultBox.textContent = 'No target Child found for the selected Carrier.';
+    } else if (!backendOnline) {
+      debugKillResultBox.textContent = 'Backend must be online before using the kill switch.';
+    } else {
+      debugKillResultBox.textContent = `Ready to force-disarm ${killTarget.vehicle_id}.`;
     }
   }
 }
@@ -1831,6 +1861,9 @@ async function executeManualReleaseTrigger() {
     return;
   }
 
+  runtimeState.debugChildKillTargetVehicleId = targetVehicle.vehicle_id;
+  runtimeState.debugChildKillResult = null;
+
   if (!saveConnectionForm({ persist: false })) return;
   saveBackendUrl();
   if (runtimeState.status !== 'BACKEND ONLINE') {
@@ -1917,6 +1950,86 @@ async function executeManualReleaseTrigger() {
       message: error.message,
     };
   } finally {
+    renderCompanionTestPrep();
+    renderRuntimeConnection();
+  }
+}
+
+async function executeDebugChildKill() {
+  const carrierVehicle = getSelectedVehicle();
+  const pinnedTarget = getVehicles().find(
+    (item) => item.vehicle_id === runtimeState.debugChildKillTargetVehicleId
+  );
+  const targetVehicle = pinnedTarget || (carrierVehicle ? getManualReleaseTarget(carrierVehicle) : null);
+  const action = 'FORCE_DISARM';
+
+  if (!carrierVehicle || normalizeVehicleRole(carrierVehicle.role) !== 'carrier' || !targetVehicle) {
+    runtimeState.debugChildKillResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: targetVehicle?.vehicle_id || '',
+      action,
+      reason: !carrierVehicle
+        ? 'carrier_not_selected'
+        : normalizeVehicleRole(carrierVehicle.role) !== 'carrier'
+          ? 'selected_vehicle_not_carrier'
+          : 'target_child_not_found',
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  if (runtimeState.status !== 'BACKEND ONLINE') {
+    runtimeState.debugChildKillResult = {
+      ok: false,
+      accepted: false,
+      vehicle_id: targetVehicle.vehicle_id,
+      action,
+      reason: 'backend_not_online',
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  runtimeState.debugChildKillTargetVehicleId = targetVehicle.vehicle_id;
+  runtimeState.debugChildKillInFlight = true;
+  runtimeState.debugChildKillResult = {
+    ok: false,
+    vehicle_id: targetVehicle.vehicle_id,
+    action,
+    reason: 'sending',
+  };
+  renderCompanionTestPrep();
+
+  try {
+    const response = await fetch(
+      `${runtimeState.backendUrl}/api/drones/${encodeURIComponent(targetVehicle.vehicle_id)}/emergency`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ action }),
+      }
+    );
+    const responseBody = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      runtimeState.debugChildKillResult = parseEmergencyError(responseBody, action);
+      return;
+    }
+
+    runtimeState.debugChildKillResult = responseBody;
+    applyEmergencyResultToConnection(targetVehicle.vehicle_id, responseBody);
+  } catch (error) {
+    runtimeState.debugChildKillResult = {
+      ok: false,
+      vehicle_id: targetVehicle.vehicle_id,
+      action,
+      reason: 'request_failed',
+      message: error.message,
+    };
+  } finally {
+    runtimeState.debugChildKillInFlight = false;
     renderCompanionTestPrep();
     renderRuntimeConnection();
   }
