@@ -55,6 +55,38 @@ const runtimeState = {
   missionResultHtml: '',
 };
 
+const NAV_GATE_DIAGNOSTIC_LABELS = {
+  attitude_stable: 'Attitude stable',
+  armed: 'Armed',
+  offboard_active: 'Offboard active',
+  z_valid: 'Z valid',
+  v_z_valid: 'VZ valid',
+  vertical_speed_stable: '|VZ| < 0.3 m/s',
+  local_velocity_valid: 'Local velocity valid',
+  v_xy_valid: 'VXY valid',
+  xy_valid: 'XY position valid',
+  no_dead_reckoning: 'No dead reckoning',
+  velocity_finite: 'Velocity finite',
+  velocity_estimate_usable: 'Velocity estimate usable',
+  horizontal_speed_stable: 'VXY speed < 0.5 m/s',
+  position_global_valid: 'Local/global reference valid',
+  heading_valid: 'Heading valid',
+  global_position_valid: 'Global position valid',
+  ekf_ready: 'EKF ready',
+  velocity_control_allowed: 'Velocity control allowed',
+  recovery_boost_active: 'Recovery BOOST (MAX thrust)',
+  attitude_failure_deferred: 'Roll/Pitch FD deferred',
+};
+
+const NAV_GATE_TIMING_LABELS = {
+  offboard_stream_ms: 'Offboard stream',
+  first_attitude_setpoint_ms: 'First attitude setpoint',
+  arm_request_ms: 'Arm request',
+  armed_ms: 'Armed true',
+  first_actuator_output_ms: 'First actuator output',
+  boost_exit_ms: 'BOOST exit',
+};
+
 function getDefaultBackendUrl() {
   if (window.location.origin.startsWith('http://') || window.location.origin.startsWith('https://')) {
     return window.location.origin;
@@ -1013,6 +1045,125 @@ function renderEmergencyControls() {
     : 'Backend must be online before executing an emergency action.';
 }
 
+function formatNavGateDuration(ms) {
+  if (!Number.isFinite(Number(ms))) return '-';
+  const seconds = Math.max(0, Number(ms)) / 1000;
+  return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
+}
+
+function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
+  const stateBadge = document.getElementById('navGateDiagnosticsState');
+  const meta = document.getElementById('navGateDiagnosticsMeta');
+  const grid = document.getElementById('navGateDiagnosticsGrid');
+  const timingBox = document.getElementById('navGateTiming');
+  if (!stateBadge || !meta || !grid || !timingBox) return;
+
+  const pinnedTarget = getVehicles().find(
+    (item) => item.vehicle_id === runtimeState.debugChildKillTargetVehicleId
+  );
+  const selectedIsChild = selectedVehicle && normalizeVehicleRole(selectedVehicle.role) === 'child';
+  const target = selectedIsChild ? selectedVehicle : (pinnedTarget || manualTarget);
+  const connection = target ? runtimeState.vehicleConnections[target.vehicle_id] : null;
+  const diagnostic = connection?.nav_gate;
+
+  grid.innerHTML = '';
+  timingBox.innerHTML = '';
+
+  if (!target) {
+    stateBadge.textContent = 'NO TARGET';
+    stateBadge.className = 'badge warn';
+    meta.textContent = 'Select a Child or a Carrier with a target Child.';
+    return;
+  }
+
+  if (!diagnostic?.available) {
+    stateBadge.textContent = 'NO DATA';
+    stateBadge.className = 'badge warn';
+    meta.textContent = `${target.vehicle_id}: NAV_GATE diagnostic telemetry not received.`;
+    return;
+  }
+
+  const valid = diagnostic.valid === true && diagnostic.stale !== true;
+  stateBadge.textContent = valid ? (diagnostic.state || 'UNKNOWN') : 'STALE';
+  stateBadge.className = valid && diagnostic.state !== 'FAILED' ? 'badge ok' : 'badge warn';
+
+  const metaParts = [
+    target.vehicle_id,
+    `age ${formatNavGateDuration(diagnostic.age_ms)}`,
+  ];
+  if (diagnostic.trigger_seq !== null && diagnostic.trigger_seq !== undefined) {
+    metaParts.push(`trigger ${diagnostic.trigger_seq}`);
+  }
+  if (diagnostic.state_since_ms !== null && diagnostic.state_since_ms !== undefined) {
+    metaParts.push(`state ${formatNavGateDuration(diagnostic.state_since_ms)}`);
+  }
+  meta.textContent = metaParts.join(' · ');
+
+  for (const [key, label] of Object.entries(NAV_GATE_DIAGNOSTIC_LABELS)) {
+    const condition = diagnostic.conditions?.[key];
+    const value = valid && typeof condition?.value === 'boolean' ? condition.value : null;
+    const row = document.createElement('div');
+    row.className = `nav-gate-diagnostic-row ${value === true ? 'is-true' : value === false ? 'is-false' : 'is-stale'}`;
+
+    const dot = document.createElement('span');
+    dot.className = 'nav-gate-diagnostic-dot';
+
+    const name = document.createElement('span');
+    name.textContent = label;
+
+    const timing = document.createElement('span');
+    timing.className = 'nav-gate-diagnostic-value';
+    if (value === null) {
+      timing.textContent = 'STALE';
+    } else {
+      const parts = [value ? 'ON' : 'OFF', formatNavGateDuration(condition?.since_ms)];
+      if (condition?.first_true_after_trigger_ms !== null && condition?.first_true_after_trigger_ms !== undefined) {
+        parts.push(`T+${formatNavGateDuration(condition.first_true_after_trigger_ms)}`);
+      }
+      timing.textContent = parts.join(' · ');
+    }
+
+    row.append(dot, name, timing);
+    grid.appendChild(row);
+  }
+
+  const timing = diagnostic.timing || {};
+  const timingTitle = document.createElement('strong');
+  timingTitle.textContent = 'FC trigger-relative timeline';
+  timingBox.appendChild(timingTitle);
+
+  for (const [key, label] of Object.entries(NAV_GATE_TIMING_LABELS)) {
+    const row = document.createElement('div');
+    row.className = 'nav-gate-timing-row';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const value = document.createElement('span');
+    const timingValueAvailable = timing[key] !== null
+      && timing[key] !== undefined
+      && Number.isFinite(Number(timing[key]));
+    value.textContent = timingValueAvailable
+      ? `T+${Number(timing[key]).toFixed(1)} ms`
+      : '-';
+    row.append(name, value);
+    timingBox.appendChild(row);
+  }
+
+  const live = document.createElement('div');
+  live.className = 'nav-gate-timing-live';
+  const liveParts = [];
+  if (timing.vz_m_s !== null && timing.vz_m_s !== undefined && Number.isFinite(Number(timing.vz_m_s))) {
+    liveParts.push(`VZ ${Number(timing.vz_m_s).toFixed(2)} m/s`);
+  }
+  if (timing.base_thrust !== null && timing.base_thrust !== undefined && Number.isFinite(Number(timing.base_thrust))) {
+    liveParts.push(`base thrust ${Number(timing.base_thrust).toFixed(3)}`);
+  }
+  if (typeof timing.boost_active === 'boolean') {
+    liveParts.push(timing.boost_active ? 'BOOST' : 'REGULATION');
+  }
+  live.textContent = liveParts.length ? liveParts.join(' · ') : 'Timing telemetry not received.';
+  timingBox.appendChild(live);
+}
+
 function renderCompanionTestPrep() {
   const vehicle = getSelectedVehicle();
   const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
@@ -1129,6 +1280,8 @@ function renderCompanionTestPrep() {
       debugLandResultBox.textContent = `Ready to land ${landTarget.vehicle_id}.`;
     }
   }
+
+  renderNavGateDiagnostics(vehicle, manualTarget);
 }
 
 function renderCompanionLinkTest() {
@@ -2413,6 +2566,7 @@ function markVehiclesConnecting() {
       last_fc_heartbeat_ms: null,
       position: null,
       gps: null,
+      nav_gate: null,
       mission: null,
       mission_progress: null,
       action_plan: null,
@@ -2460,6 +2614,7 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     last_fc_heartbeat_ms: existing.last_fc_heartbeat_ms ?? null,
     position: existing.position ?? null,
     gps: existing.gps ?? null,
+    nav_gate: existing.nav_gate ?? null,
     mission: existing.mission ?? null,
     mission_progress: existing.mission_progress ?? null,
     action_plan: existing.action_plan ?? null,
@@ -2580,6 +2735,7 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     last_fc_heartbeat_ms: getDroneStatusValue(result, 'last_fc_heartbeat_ms', existing.last_fc_heartbeat_ms ?? null),
     position: getDroneStatusValue(result, 'position', existing.position ?? null),
     gps: getDroneStatusValue(result, 'gps', existing.gps ?? null),
+    nav_gate: getDroneStatusValue(result, 'nav_gate', existing.nav_gate ?? null),
     mission: getDroneStatusValue(result, 'mission', existing.mission ?? null),
     mission_progress: getDroneStatusValue(result, 'mission_progress', existing.mission_progress ?? null),
     action_plan: getDroneStatusValue(result, 'action_plan', existing.action_plan ?? null),
@@ -2826,6 +2982,7 @@ function getVehicleConnection(vehicle) {
     last_fc_heartbeat_ms: null,
     position: null,
     gps: null,
+    nav_gate: null,
     mission: null,
     mission_progress: null,
     action_plan: null,

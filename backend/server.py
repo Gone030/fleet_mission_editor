@@ -310,6 +310,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
         "position": health.get("position"),
         "gps": health.get("gps"),
+        "nav_gate": health.get("nav_gate"),
         "mission": health.get("mission"),
         "mission_progress": health.get("mission_progress"),
         "action_plan": health.get("action_plan"),

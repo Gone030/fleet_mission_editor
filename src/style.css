@@ -603,6 +603,81 @@
       word-break: break-word;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
+    .nav-gate-diagnostics {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1220;
+    }
+    .nav-gate-diagnostics-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .nav-gate-diagnostics-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .nav-gate-diagnostic-row {
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      min-height: 24px;
+      padding: 3px 5px;
+      border-radius: 5px;
+      background: rgba(15, 23, 42, .65);
+      font-size: 11px;
+    }
+    .nav-gate-diagnostic-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--muted);
+      box-shadow: 0 0 0 2px rgba(156, 163, 175, .12);
+    }
+    .nav-gate-diagnostic-row.is-true .nav-gate-diagnostic-dot {
+      background: var(--ok);
+      box-shadow: 0 0 0 2px rgba(52, 211, 153, .14);
+    }
+    .nav-gate-diagnostic-row.is-false .nav-gate-diagnostic-dot {
+      background: var(--danger);
+      box-shadow: 0 0 0 2px rgba(248, 113, 113, .14);
+    }
+    .nav-gate-diagnostic-value {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .nav-gate-timing {
+      margin-top: 9px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      font-size: 11px;
+    }
+    .nav-gate-timing > strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .nav-gate-timing-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 2px 0;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .nav-gate-timing-live {
+      margin-top: 5px;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     .mission-result-table {
       width: 100%;
       margin-top: 10px;
