@@ -1148,6 +1148,62 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
     timingBox.appendChild(row);
   }
 
+  const attitudeTitle = document.createElement('strong');
+  attitudeTitle.textContent = 'Carrier-aligned attitude guard';
+  attitudeTitle.className = 'nav-gate-attitude-title';
+  timingBox.appendChild(attitudeTitle);
+
+  const attitudeChecks = [
+    ['PREPARE ACK', timing.prepare_acked],
+    ['Gyro valid', timing.gyro_valid],
+    ['Raw attitude recovered', timing.attitude_reference_recovered],
+  ];
+  for (const [label, status] of attitudeChecks) {
+    const row = document.createElement('div');
+    row.className = `nav-gate-diagnostic-row ${status === true ? 'is-true' : status === false ? 'is-false' : 'is-stale'}`;
+    const dot = document.createElement('span');
+    dot.className = 'nav-gate-diagnostic-dot';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const value = document.createElement('span');
+    value.className = 'nav-gate-diagnostic-value';
+    value.textContent = status === true ? 'ON' : status === false ? 'OFF' : 'NO DATA';
+    row.append(dot, name, value);
+    timingBox.appendChild(row);
+  }
+
+  const attitudeLive = document.createElement('div');
+  attitudeLive.className = 'nav-gate-timing-live';
+  const attitudeParts = [];
+  if (timing.attitude_source) attitudeParts.push(`source ${timing.attitude_source}`);
+  if (typeof timing.attitude_suspect === 'boolean') {
+    attitudeParts.push(timing.attitude_suspect ? 'RAW SUSPECT' : 'RAW AGREED');
+  }
+  if (timing.attitude_disagreement_deg !== null && timing.attitude_disagreement_deg !== undefined
+      && Number.isFinite(Number(timing.attitude_disagreement_deg))) {
+    attitudeParts.push(`diff ${Number(timing.attitude_disagreement_deg).toFixed(1)}°`);
+  }
+  if (timing.attitude_blend_progress !== null && timing.attitude_blend_progress !== undefined
+      && Number.isFinite(Number(timing.attitude_blend_progress))) {
+    attitudeParts.push(`blend ${(Number(timing.attitude_blend_progress) * 100).toFixed(0)}%`);
+  }
+  if (timing.prepare_token !== null && timing.prepare_token !== undefined) {
+    attitudeParts.push(`token ${timing.prepare_token}`);
+  }
+  const anglePairs = [
+    ['raw', timing.raw_roll_deg, timing.raw_pitch_deg],
+    ['control', timing.control_roll_deg, timing.control_pitch_deg],
+    ['reference', timing.reference_roll_deg, timing.reference_pitch_deg],
+  ];
+  for (const [label, roll, pitch] of anglePairs) {
+    if (roll !== null && roll !== undefined && pitch !== null && pitch !== undefined
+        && Number.isFinite(Number(roll)) && Number.isFinite(Number(pitch))) {
+      attitudeParts.push(`${label} R${Number(roll).toFixed(1)}° P${Number(pitch).toFixed(1)}°`);
+    }
+  }
+  attitudeLive.textContent = attitudeParts.length ? attitudeParts.join(' · ') : 'Attitude reference telemetry not received.';
+  timingBox.appendChild(attitudeLive);
+
   const live = document.createElement('div');
   live.className = 'nav-gate-timing-live';
   const liveParts = [];

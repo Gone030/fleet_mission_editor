@@ -665,6 +665,11 @@
       display: block;
       margin-bottom: 4px;
     }
+    .nav-gate-attitude-title {
+      margin-top: 9px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
     .nav-gate-timing-row {
       display: flex;
       justify-content: space-between;
