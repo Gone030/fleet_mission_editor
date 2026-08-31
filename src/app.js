@@ -74,7 +74,7 @@ const NAV_GATE_DIAGNOSTIC_LABELS = {
   global_position_valid: 'Global position valid',
   ekf_ready: 'EKF ready',
   velocity_control_allowed: 'Velocity control allowed',
-  recovery_boost_active: 'Recovery BOOST (MAX thrust)',
+  recovery_boost_active: 'Recovery BOOST ready',
   attitude_failure_deferred: 'Roll/Pitch FD deferred',
 };
 
@@ -1099,6 +1099,9 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
   }
   meta.textContent = metaParts.join(' · ');
 
+  const boostRunning = diagnostic.state === 'ATTITUDE_RECOVERY'
+    || diagnostic.state === 'EKF_RECOVERY';
+
   for (const [key, label] of Object.entries(NAV_GATE_DIAGNOSTIC_LABELS)) {
     const condition = diagnostic.conditions?.[key];
     const value = valid && typeof condition?.value === 'boolean' ? condition.value : null;
@@ -1109,7 +1112,9 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
     dot.className = 'nav-gate-diagnostic-dot';
 
     const name = document.createElement('span');
-    name.textContent = label;
+    name.textContent = key === 'recovery_boost_active' && boostRunning
+      ? 'Recovery BOOST active'
+      : label;
 
     const timing = document.createElement('span');
     timing.className = 'nav-gate-diagnostic-value';
@@ -1214,7 +1219,13 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
     liveParts.push(`base thrust ${Number(timing.base_thrust).toFixed(3)}`);
   }
   if (typeof timing.boost_active === 'boolean') {
-    liveParts.push(timing.boost_active ? 'BOOST' : 'REGULATION');
+    if (timing.boost_active && boostRunning) {
+      liveParts.push('BOOST ACTIVE');
+    } else if (timing.boost_active) {
+      liveParts.push('BOOST READY');
+    } else {
+      liveParts.push('REGULATION');
+    }
   }
   live.textContent = liveParts.length ? liveParts.join(' · ') : 'Timing telemetry not received.';
   timingBox.appendChild(live);
