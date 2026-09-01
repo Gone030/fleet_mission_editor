@@ -75,7 +75,7 @@ const NAV_GATE_DIAGNOSTIC_LABELS = {
   ekf_ready: 'EKF ready',
   velocity_control_allowed: 'Velocity control allowed',
   recovery_boost_active: 'Recovery BOOST ready',
-  attitude_failure_deferred: 'Roll/Pitch FD deferred',
+  attitude_failure_deferred: 'Automatic Disarm/Terminate suppressed',
 };
 
 const NAV_GATE_DIAGNOSTIC_GROUPS = [
@@ -149,7 +149,7 @@ const NAV_GATE_TIMING_LABELS = {
   first_attitude_setpoint_ms: 'First attitude setpoint',
   arm_request_ms: 'Arm request',
   armed_ms: 'Armed true',
-  first_actuator_output_ms: 'First actuator output',
+  first_actuator_output_ms: 'First actuator command (inhibited until armed)',
   boost_exit_ms: 'BOOST exit',
 };
 
@@ -1256,9 +1256,14 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
     const timingValueAvailable = timing[key] !== null
       && timing[key] !== undefined
       && Number.isFinite(Number(timing[key]));
-    value.textContent = timingValueAvailable
-      ? `T+${Number(timing[key]).toFixed(1)} ms`
-      : '-';
+    if (timingValueAvailable) {
+      const relativeMs = Number(timing[key]);
+      value.textContent = relativeMs < 0
+        ? `T−${Math.abs(relativeMs).toFixed(1)} ms`
+        : `T+${relativeMs.toFixed(1)} ms`;
+    } else {
+      value.textContent = '-';
+    }
     row.append(name, value);
     timingBox.appendChild(row);
   }
@@ -1269,6 +1274,8 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
   timingBox.appendChild(attitudeTitle);
 
   const attitudeChecks = [
+    ['PREPARE started', timing.prepare_started],
+    ['Offboard pre-warm ready', timing.prepare_ready],
     ['PREPARE ACK', timing.prepare_acked],
     ['Raw attitude recovered', timing.attitude_reference_recovered],
   ];
@@ -1303,6 +1310,14 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
   }
   if (timing.prepare_token !== null && timing.prepare_token !== undefined) {
     attitudeParts.push(`token ${timing.prepare_token}`);
+  }
+  if (timing.prepare_warmup_ms !== null && timing.prepare_warmup_ms !== undefined
+      && Number.isFinite(Number(timing.prepare_warmup_ms))) {
+    attitudeParts.push(`pre-warm ${Number(timing.prepare_warmup_ms).toFixed(1)} ms`);
+  }
+  if (timing.trigger_arm_delay_ms !== null && timing.trigger_arm_delay_ms !== undefined
+      && Number.isFinite(Number(timing.trigger_arm_delay_ms))) {
+    attitudeParts.push(`arm delay ${Number(timing.trigger_arm_delay_ms).toFixed(0)} ms`);
   }
   const anglePairs = [
     ['raw', timing.raw_roll_deg, timing.raw_pitch_deg],
