@@ -78,6 +78,72 @@ const NAV_GATE_DIAGNOSTIC_LABELS = {
   attitude_failure_deferred: 'Roll/Pitch FD deferred',
 };
 
+const NAV_GATE_DIAGNOSTIC_GROUPS = [
+  {
+    title: 'IMU / attitude',
+    source: 'Gyroscope + accelerometer',
+    description: 'Angular motion and the attitude used by the controller.',
+    items: [
+      { key: 'attitude_stable' },
+      { timingKey: 'gyro_valid', label: 'Gyro data valid' },
+    ],
+  },
+  {
+    title: 'Vertical estimate',
+    source: 'Barometer + IMU · EKF',
+    description: 'Altitude and vertical-velocity estimates; not a GPS-only group.',
+    items: [
+      { key: 'z_valid', label: 'Altitude estimate (Z) valid' },
+      { key: 'v_z_valid', label: 'Vertical velocity (VZ) valid' },
+      { key: 'vertical_speed_stable' },
+    ],
+  },
+  {
+    title: 'Horizontal / global estimate',
+    source: 'GPS-dependent in current hardware · EKF',
+    description: 'Horizontal velocity, position and the global reference used by the mission.',
+    items: [
+      { key: 'local_velocity_valid' },
+      { key: 'v_xy_valid', label: 'Horizontal velocity (VXY) valid' },
+      { key: 'horizontal_speed_stable' },
+      { key: 'xy_valid', label: 'Local XY position valid' },
+      { key: 'no_dead_reckoning', label: 'GNSS-aided (not dead reckoning)' },
+      { key: 'position_global_valid', label: 'Local position has global reference' },
+      { key: 'global_position_valid' },
+    ],
+  },
+  {
+    title: 'Heading estimate',
+    source: 'Magnetometer + EKF (current gate)',
+    description: 'Yaw alignment, magnetic consistency, disturbance and innovation checks.',
+    items: [
+      { key: 'heading_valid', label: 'Heading solution valid' },
+    ],
+  },
+  {
+    title: 'EKF composite readiness',
+    source: 'Combined estimator result',
+    description: 'Derived checks used before horizontal control and mission progression.',
+    items: [
+      { key: 'velocity_finite' },
+      { key: 'velocity_estimate_usable' },
+      { key: 'ekf_ready' },
+    ],
+  },
+  {
+    title: 'NAV_GATE / control state',
+    source: 'Commander + controller',
+    description: 'Operational state indicators; OFF can be normal before the trigger.',
+    items: [
+      { key: 'armed' },
+      { key: 'offboard_active' },
+      { key: 'velocity_control_allowed' },
+      { key: 'recovery_boost_active' },
+      { key: 'attitude_failure_deferred' },
+    ],
+  },
+];
+
 const NAV_GATE_TIMING_LABELS = {
   offboard_stream_ms: 'Offboard stream',
   first_attitude_setpoint_ms: 'First attitude setpoint',
@@ -1101,38 +1167,82 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
 
   const boostRunning = diagnostic.state === 'ATTITUDE_RECOVERY'
     || diagnostic.state === 'EKF_RECOVERY';
+  const timing = diagnostic.timing || {};
 
-  for (const [key, label] of Object.entries(NAV_GATE_DIAGNOSTIC_LABELS)) {
-    const condition = diagnostic.conditions?.[key];
-    const value = valid && typeof condition?.value === 'boolean' ? condition.value : null;
-    const row = document.createElement('div');
-    row.className = `nav-gate-diagnostic-row ${value === true ? 'is-true' : value === false ? 'is-false' : 'is-stale'}`;
+  for (const groupDefinition of NAV_GATE_DIAGNOSTIC_GROUPS) {
+    const group = document.createElement('section');
+    group.className = 'nav-gate-diagnostic-group';
 
-    const dot = document.createElement('span');
-    dot.className = 'nav-gate-diagnostic-dot';
+    const groupHead = document.createElement('div');
+    groupHead.className = 'nav-gate-diagnostic-group-head';
 
-    const name = document.createElement('span');
-    name.textContent = key === 'recovery_boost_active' && boostRunning
-      ? 'Recovery BOOST active'
-      : label;
+    const groupIdentity = document.createElement('div');
+    const groupTitle = document.createElement('strong');
+    groupTitle.textContent = groupDefinition.title;
+    const groupSource = document.createElement('span');
+    groupSource.className = 'nav-gate-diagnostic-source';
+    groupSource.textContent = groupDefinition.source;
+    groupIdentity.append(groupTitle, groupSource);
 
-    const timing = document.createElement('span');
-    timing.className = 'nav-gate-diagnostic-value';
-    if (value === null) {
-      timing.textContent = 'STALE';
-    } else {
-      const parts = [value ? 'ON' : 'OFF', formatNavGateDuration(condition?.since_ms)];
-      if (condition?.first_true_after_trigger_ms !== null && condition?.first_true_after_trigger_ms !== undefined) {
-        parts.push(`T+${formatNavGateDuration(condition.first_true_after_trigger_ms)}`);
+    const values = groupDefinition.items.map((item) => {
+      if (!valid) return null;
+      if (item.timingKey) {
+        return typeof timing[item.timingKey] === 'boolean' ? timing[item.timingKey] : null;
       }
-      timing.textContent = parts.join(' · ');
-    }
+      const condition = diagnostic.conditions?.[item.key];
+      return typeof condition?.value === 'boolean' ? condition.value : null;
+    });
+    const knownCount = values.filter((value) => typeof value === 'boolean').length;
+    const onCount = values.filter((value) => value === true).length;
+    const groupSummary = document.createElement('span');
+    groupSummary.className = 'nav-gate-diagnostic-group-summary';
+    groupSummary.textContent = knownCount > 0 ? `${onCount}/${knownCount} ON` : 'NO DATA';
+    groupHead.append(groupIdentity, groupSummary);
 
-    row.append(dot, name, timing);
-    grid.appendChild(row);
+    const groupDescription = document.createElement('div');
+    groupDescription.className = 'nav-gate-diagnostic-description';
+    groupDescription.textContent = groupDefinition.description;
+
+    const groupRows = document.createElement('div');
+    groupRows.className = 'nav-gate-diagnostic-group-rows';
+
+    groupDefinition.items.forEach((item, index) => {
+      const condition = item.key ? diagnostic.conditions?.[item.key] : null;
+      const value = values[index];
+      const row = document.createElement('div');
+      row.className = `nav-gate-diagnostic-row ${value === true ? 'is-true' : value === false ? 'is-false' : 'is-stale'}`;
+
+      const dot = document.createElement('span');
+      dot.className = 'nav-gate-diagnostic-dot';
+
+      const name = document.createElement('span');
+      const defaultLabel = item.key ? NAV_GATE_DIAGNOSTIC_LABELS[item.key] : item.timingKey;
+      name.textContent = item.key === 'recovery_boost_active' && boostRunning
+        ? 'Recovery BOOST active'
+        : (item.label || defaultLabel);
+
+      const valueLabel = document.createElement('span');
+      valueLabel.className = 'nav-gate-diagnostic-value';
+      if (value === null) {
+        valueLabel.textContent = 'NO DATA';
+      } else if (item.timingKey) {
+        valueLabel.textContent = value ? 'ON' : 'OFF';
+      } else {
+        const parts = [value ? 'ON' : 'OFF', formatNavGateDuration(condition?.since_ms)];
+        if (condition?.first_true_after_trigger_ms !== null && condition?.first_true_after_trigger_ms !== undefined) {
+          parts.push(`T+${formatNavGateDuration(condition.first_true_after_trigger_ms)}`);
+        }
+        valueLabel.textContent = parts.join(' · ');
+      }
+
+      row.append(dot, name, valueLabel);
+      groupRows.appendChild(row);
+    });
+
+    group.append(groupHead, groupDescription, groupRows);
+    grid.appendChild(group);
   }
 
-  const timing = diagnostic.timing || {};
   const timingTitle = document.createElement('strong');
   timingTitle.textContent = 'FC trigger-relative timeline';
   timingBox.appendChild(timingTitle);
@@ -1160,7 +1270,6 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
 
   const attitudeChecks = [
     ['PREPARE ACK', timing.prepare_acked],
-    ['Gyro valid', timing.gyro_valid],
     ['Raw attitude recovered', timing.attitude_reference_recovered],
   ];
   for (const [label, status] of attitudeChecks) {
