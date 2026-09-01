@@ -74,7 +74,8 @@ const NAV_GATE_DIAGNOSTIC_LABELS = {
   global_position_valid: 'Global position valid',
   ekf_ready: 'EKF ready',
   velocity_control_allowed: 'Velocity control allowed',
-  recovery_boost_active: 'Recovery BOOST ready',
+  recovery_boost_ready: 'Recovery BOOST ready',
+  recovery_boost_active: 'Recovery BOOST active',
   attitude_failure_deferred: 'Automatic Disarm/Terminate suppressed',
 };
 
@@ -138,6 +139,7 @@ const NAV_GATE_DIAGNOSTIC_GROUPS = [
       { key: 'armed' },
       { key: 'offboard_active' },
       { key: 'velocity_control_allowed' },
+      { key: 'recovery_boost_ready' },
       { key: 'recovery_boost_active' },
       { key: 'attitude_failure_deferred' },
     ],
@@ -150,6 +152,7 @@ const NAV_GATE_TIMING_LABELS = {
   arm_request_ms: 'Arm request',
   armed_ms: 'Armed true',
   first_actuator_output_ms: 'First actuator command (inhibited until armed)',
+  boost_enter_ms: 'BOOST enter',
   boost_exit_ms: 'BOOST exit',
 };
 
@@ -1165,8 +1168,6 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
   }
   meta.textContent = metaParts.join(' · ');
 
-  const boostRunning = diagnostic.state === 'ATTITUDE_RECOVERY'
-    || diagnostic.state === 'EKF_RECOVERY';
   const timing = diagnostic.timing || {};
 
   for (const groupDefinition of NAV_GATE_DIAGNOSTIC_GROUPS) {
@@ -1217,9 +1218,7 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
 
       const name = document.createElement('span');
       const defaultLabel = item.key ? NAV_GATE_DIAGNOSTIC_LABELS[item.key] : item.timingKey;
-      name.textContent = item.key === 'recovery_boost_active' && boostRunning
-        ? 'Recovery BOOST active'
-        : (item.label || defaultLabel);
+      name.textContent = item.label || defaultLabel;
 
       const valueLabel = document.createElement('span');
       valueLabel.className = 'nav-gate-diagnostic-value';
@@ -1343,10 +1342,8 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
     liveParts.push(`base thrust ${Number(timing.base_thrust).toFixed(3)}`);
   }
   if (typeof timing.boost_active === 'boolean') {
-    if (timing.boost_active && boostRunning) {
+    if (timing.boost_active) {
       liveParts.push('BOOST ACTIVE');
-    } else if (timing.boost_active) {
-      liveParts.push('BOOST READY');
     } else {
       liveParts.push('REGULATION');
     }

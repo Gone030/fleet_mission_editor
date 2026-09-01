@@ -284,12 +284,8 @@
         </div>
         <div class="mission-plan-actions" style="margin-top:10px;">
           <button id="runLinkTestBtn" type="button">통신 테스트</button>
-          <button id="manualReleaseTriggerBtn" class="primary" type="button">수동 릴리즈 + 트리거</button>
         </div>
         <div id="linkTestResult" class="runtime-result muted">No link test yet.</div>
-        <div id="manualReleaseTriggerResult" class="hint runtime-message">
-          Select a Carrier and connect backend before manual release trigger.
-        </div>
         <div id="navGateDiagnostics" class="nav-gate-diagnostics">
           <div class="nav-gate-diagnostics-head">
             <strong>Child sensor / EKF / NAV_GATE diagnostics</strong>
@@ -298,6 +294,12 @@
           <div id="navGateDiagnosticsMeta" class="hint">Select a Carrier with a target Child.</div>
           <div id="navGateDiagnosticsGrid" class="nav-gate-diagnostics-grid"></div>
           <div id="navGateTiming" class="nav-gate-timing"></div>
+        </div>
+        <button id="manualReleaseTriggerBtn" class="primary" type="button" style="width:100%; margin-top:10px;">
+          수동 릴리즈 + 트리거
+        </button>
+        <div id="manualReleaseTriggerResult" class="hint runtime-message">
+          Select a Carrier and connect backend before manual release trigger.
         </div>
         <button id="debugChildKillBtn" class="danger" type="button" style="width:100%; margin-top:10px;">
           대상 자드론 킬스위치 (Force Disarm)
