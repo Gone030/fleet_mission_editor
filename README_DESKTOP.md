@@ -101,6 +101,7 @@ dist/FleetMissionEditor.exe
 
 - `index.html`
 - `src/`
+- `src/vendor/leaflet/` (오프라인에서도 UI와 기체 연결을 초기화하기 위한 로컬 지도 라이브러리)
 - `backend/`
 - `desktop/launcher.py`
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fleet Mission Editor</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="./src/vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
@@ -162,6 +162,7 @@
     </aside>
 
     <main id="map">
+      <div id="mapStatusBanner" class="map-status-banner hidden" role="status"></div>
       <div class="mission-start-overlay">
         <button id="missionStartBtn" class="mission-start-button" type="button" disabled title="검증된 Carrier 미션과 액션 플랜이 필요합니다.">
           미션 시작
@@ -339,7 +340,7 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="./src/vendor/leaflet/leaflet.js"></script>
 <script src="./src/app.js"></script>
 </body>
 </html>

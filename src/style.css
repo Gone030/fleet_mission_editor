@@ -278,6 +278,25 @@
       margin-top: 16px;
     }
     #map { width: 100%; height: 100%; background: #111827; position: relative; }
+    .map-status-banner {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      z-index: 950;
+      max-width: min(620px, calc(100% - 32px));
+      padding: 9px 13px;
+      border: 1px solid rgba(251, 191, 36, 0.7);
+      border-radius: 8px;
+      background: rgba(17, 24, 39, 0.94);
+      color: #fcd34d;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.4;
+      text-align: center;
+      transform: translateX(-50%);
+      pointer-events: none;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    }
     .mission-start-overlay {
       position: absolute;
       top: 14px;

@@ -391,13 +391,43 @@ let polylines = {};
 const liveDroneMarkers = new Map();
 
 
-const map = L.map('map').setView([36.3504, 127.3845], 14);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 20,
-  attribution: "&copy; OpenStreetMap contributors",
-}).addTo(map);
+let map = null;
 
-map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
+function setMapStatus(message = '') {
+  const banner = document.getElementById('mapStatusBanner');
+  if (!banner) return;
+  banner.textContent = message;
+  banner.classList.toggle('hidden', !message);
+}
+
+function initializeMap() {
+  if (typeof window.L === 'undefined') {
+    setMapStatus('지도를 초기화하지 못했습니다. Backend 및 기체 연결 기능은 계속 사용할 수 있습니다.');
+    return;
+  }
+
+  try {
+    map = L.map('map').setView([36.3504, 127.3845], 14);
+    const tileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 20,
+      attribution: "&copy; OpenStreetMap contributors",
+    });
+    let tileErrorShown = false;
+    tileLayer.on('tileerror', () => {
+      if (tileErrorShown) return;
+      tileErrorShown = true;
+      setMapStatus('인터넷 연결이 없어 배경 지도를 표시할 수 없습니다. 기체 연결 및 상태 기능은 정상 동작합니다.');
+    });
+    tileLayer.addTo(map);
+    map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
+  } catch (error) {
+    console.error('Map initialization failed:', error);
+    map = null;
+    setMapStatus('지도를 초기화하지 못했습니다. Backend 및 기체 연결 기능은 계속 사용할 수 있습니다.');
+  }
+}
+
+initializeMap();
 
 setupCollapsibleSections();
 
@@ -4076,6 +4106,7 @@ function renderWaypointRows() {
 
 
 function renderMapItems() {
+  if (!map || typeof window.L === 'undefined') return;
   for (const layer of Object.values(markers).flat()) map.removeLayer(layer);
   for (const layer of Object.values(polylines)) map.removeLayer(layer);
 
@@ -4218,6 +4249,7 @@ function formatGpsDisplayState(gpsState) {
 }
 
 function updateLiveDroneMarkers(runtimeStatuses = runtimeState.vehicleConnections) {
+  if (!map || typeof window.L === 'undefined') return;
   debugLiveMarker('[live] runtimeStatuses', runtimeStatuses);
   const activeVehicleIds = new Set(Object.keys(runtimeStatuses));
   const vehiclesById = new Map(getVehicles().map((vehicle) => [vehicle.vehicle_id, vehicle]));
@@ -4276,6 +4308,10 @@ function getLivePositionForVehicle(vehicleId) {
 }
 
 function focusSelectedLiveDrone() {
+  if (!map) {
+    alert('지도를 사용할 수 없습니다. 기체 연결 상태는 Runtime Connection에서 확인할 수 있습니다.');
+    return;
+  }
   const vehicle = getSelectedVehicle();
   if (!vehicle) {
     alert('Select a vehicle first.');
@@ -4299,6 +4335,10 @@ function focusSelectedLiveDrone() {
 }
 
 function fitLiveDroneMarkers() {
+  if (!map || typeof window.L === 'undefined') {
+    alert('지도를 사용할 수 없습니다. 기체 연결 상태는 Runtime Connection에서 확인할 수 있습니다.');
+    return;
+  }
   const latLngs = [...liveDroneMarkers.values()]
     .filter((marker) => map.hasLayer(marker))
     .map((marker) => marker.getLatLng());
@@ -4358,6 +4398,7 @@ Object.defineProperty(window, 'liveMarkerDebug', {
 window.debugLiveMarkers = debugLiveMarkerSnapshot;
 
 function buildLiveDroneIcon(vehicle, gpsState) {
+  if (typeof window.L === 'undefined') return null;
   const isSelected = vehicle.vehicle_id === state.selectedVehicleId;
   const color = vehicle.color || '#60a5fa';
   const position = gpsState.position;
@@ -4500,7 +4541,7 @@ function renderMissionSummary() {
   const m = getSelectedMission();
   const selectedVehicle = getSelectedVehicle();
   const liveMarkerCount = [...liveDroneMarkers.values()]
-    .filter((marker) => map.hasLayer(marker))
+    .filter((marker) => map?.hasLayer(marker))
     .length;
   const defaultAltLabel = document.getElementById('defaultAltLabel');
   const altitudeHelp = document.getElementById('altitudeHelp');
@@ -5256,7 +5297,7 @@ function setupRightSidebarResizer() {
     const clamped = Math.min(maxWidth, Math.max(minWidth, Number(width) || 480));
     document.documentElement.style.setProperty('--right-sidebar-width', `${clamped}px`);
     window.localStorage.setItem(storageKey, String(clamped));
-    window.requestAnimationFrame(() => map.invalidateSize());
+    window.requestAnimationFrame(() => map?.invalidateSize());
   };
 
   applyWidth(window.localStorage.getItem(storageKey) || 480);
@@ -5276,7 +5317,7 @@ function setupRightSidebarResizer() {
       handle.removeEventListener('pointermove', onPointerMove);
       handle.removeEventListener('pointerup', onPointerUp);
       handle.removeEventListener('pointercancel', onPointerUp);
-      window.requestAnimationFrame(() => map.invalidateSize());
+      window.requestAnimationFrame(() => map?.invalidateSize());
     };
 
     handle.addEventListener('pointermove', onPointerMove);
