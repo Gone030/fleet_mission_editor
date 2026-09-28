@@ -287,6 +287,19 @@
           <button id="runLinkTestBtn" type="button">통신 테스트</button>
         </div>
         <div id="linkTestResult" class="runtime-result muted">No link test yet.</div>
+        <div id="releaseTriggerSession" class="release-trigger-session">
+          <div class="release-trigger-session-head">
+            <strong>Release / Trigger Session</strong>
+            <span id="releaseTriggerSessionBadge" class="badge">IDLE</span>
+          </div>
+          <div id="releaseTriggerSteps" class="release-trigger-steps" aria-label="Release trigger sequence"></div>
+          <div id="releaseTriggerPrimary" class="release-trigger-primary">No release/trigger session yet.</div>
+          <div id="releaseTriggerNavigation" class="release-trigger-navigation">GPS · Heading · EKF: NO DATA</div>
+          <details class="release-trigger-details">
+            <summary>세부 상태 및 타임라인</summary>
+            <div id="releaseTriggerDetailsBody" class="runtime-result muted">No details.</div>
+          </details>
+        </div>
         <div id="navGateDiagnostics" class="nav-gate-diagnostics">
           <div class="nav-gate-diagnostics-head">
             <strong>Child sensor / EKF / NAV_GATE diagnostics</strong>
@@ -294,7 +307,16 @@
           </div>
           <div id="navGateDiagnosticsMeta" class="hint">Select a Carrier with a target Child.</div>
           <div id="navGateDiagnosticsGrid" class="nav-gate-diagnostics-grid"></div>
-          <div id="navGateTiming" class="nav-gate-timing"></div>
+          <details class="nav-gate-timing-details">
+            <summary>FC timing / attitude 상세</summary>
+            <div id="navGateTiming" class="nav-gate-timing"></div>
+          </details>
+        </div>
+        <button id="simulatedReleaseTriggerBtn" class="danger" type="button" style="width:100%; margin-top:10px;">
+          자드론 모의 릴리즈 트리거
+        </button>
+        <div id="simulatedReleaseTriggerResult" class="hint runtime-message">
+          Select a Child. Indicators remain visible without a live connection.
         </div>
         <button id="manualReleaseTriggerBtn" class="primary" type="button" style="width:100%; margin-top:10px;">
           수동 릴리즈 + 트리거

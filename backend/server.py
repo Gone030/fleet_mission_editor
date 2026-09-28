@@ -1,4 +1,5 @@
 import json
+import math
 import socket
 import os
 import sys
@@ -85,6 +86,12 @@ class EmergencyActionRequest(BaseModel):
 class ManualReleaseTriggerRequest(BaseModel):
     target_vehicle_id: str
     seq: Optional[int] = None
+
+
+class SimulatedReleaseTriggerRequest(BaseModel):
+    source_vehicle_id: str = "ui_dummy_carrier"
+    seq: Optional[int] = None
+    timeout_ms: int = Field(default=5000, ge=1000, le=15000)
 
 
 class RuntimeStateResetRequest(BaseModel):
@@ -310,6 +317,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "last_fc_heartbeat_ms": health.get("last_fc_heartbeat_ms"),
         "position": health.get("position"),
         "gps": health.get("gps"),
+        "attitude": health.get("attitude"),
         "nav_gate": health.get("nav_gate"),
         "mission": health.get("mission"),
         "mission_progress": health.get("mission_progress"),
@@ -709,6 +717,222 @@ def send_manual_release_trigger(carrier_vehicle, target_vehicle, seq=None, timeo
             "target_vehicle_id": target_vehicle.vehicle_id,
             "seq": seq,
             "request": payload,
+        }
+
+
+def send_simulated_release_trigger(target_vehicle, source_vehicle_id, seq=None, timeout_ms=5000):
+    """Emulate the carrier PREPARE/release/trigger sequence without actuator output."""
+    seq = int(seq or now_ms())
+    relationship_id = f"ui_dummy_release_{seq}"
+    prepare_token = seq & 0x00FFFFFF or 1
+    source_vehicle_id = str(source_vehicle_id or "ui_dummy_carrier")
+    target_addr = (target_vehicle.ip, target_vehicle.udp_port)
+    started_mono = time.monotonic()
+    deadline = started_mono + max(1.0, timeout_ms / 1000.0)
+    prepare_deadline = min(deadline, started_mono + 3.0)
+    events = []
+
+    def elapsed_ms():
+        return round((time.monotonic() - started_mono) * 1000, 1)
+
+    def add_event(stage, **details):
+        events.append({"stage": stage, "at_ms": elapsed_ms(), **details})
+
+    prepare = {
+        "type": "CHILD_NAV_GATE_PREPARE",
+        "relationship_id": relationship_id,
+        "source_vehicle_id": source_vehicle_id,
+        "target_vehicle_id": target_vehicle.vehicle_id,
+        "seq": seq,
+        "prepare_token": prepare_token,
+        "carrier_roll_rad": 0.0,
+        "carrier_pitch_rad": 0.0,
+        "carrier_attitude_age_ms": 0.0,
+        "timestamp_ms": now_ms(),
+    }
+    trigger = {
+        "type": "CHILD_NAV_GATE_TRIGGER",
+        "mission_id": "ui_dummy_release_test",
+        "relationship_id": relationship_id,
+        "source_vehicle_id": source_vehicle_id,
+        "target_vehicle_id": target_vehicle.vehicle_id,
+        "release_confirmed": True,
+        "seq": seq,
+        "prepare_token": prepare_token,
+        "timestamp_ms": None,
+    }
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            udp_socket.settimeout(0.2)
+            next_prepare_send = 0.0
+            prepare_send_count = 0
+            prepare_ack = None
+
+            while time.monotonic() < prepare_deadline:
+                now_mono = time.monotonic()
+                if now_mono >= next_prepare_send:
+                    prepare["timestamp_ms"] = now_ms()
+                    udp_socket.sendto(json.dumps(prepare).encode("utf-8"), target_addr)
+                    add_event("PREPARE_SENT" if prepare_send_count == 0 else "PREPARE_RETRY")
+                    prepare_send_count += 1
+                    # The Child handles PREPARE synchronously while it checks the FC.
+                    # A short retry interval can queue duplicate PREPARE packets ahead
+                    # of TRIGGER and accidentally add delay after simulated release.
+                    next_prepare_send = now_mono + 1.0
+
+                try:
+                    data, address = udp_socket.recvfrom(65535)
+                    response = json.loads(data.decode("utf-8"))
+                except socket.timeout:
+                    continue
+
+                if (
+                    response.get("type") != "CHILD_NAV_GATE_PREPARE_ACK"
+                    or response.get("relationship_id") != relationship_id
+                    or safe_int(response.get("prepare_token"), -1) != prepare_token
+                ):
+                    continue
+
+                prepare_ack = response
+                add_event(
+                    "PREPARE_ACK",
+                    accepted=bool(response.get("accepted")),
+                    state=response.get("state"),
+                    reason=response.get("reason"),
+                    remote=f"{address[0]}:{address[1]}",
+                )
+                if response.get("accepted") is True:
+                    break
+
+            if not prepare_ack or prepare_ack.get("accepted") is not True:
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "reason": (prepare_ack or {}).get("reason") or "prepare_ack_timeout",
+                    "state": (prepare_ack or {}).get("state") or "PREPARE_TIMEOUT",
+                    "source_vehicle_id": source_vehicle_id,
+                    "target_vehicle_id": target_vehicle.vehicle_id,
+                    "seq": seq,
+                    "relationship_id": relationship_id,
+                    "prepare_token": prepare_token,
+                    "events": events,
+                }
+
+            simulated_release_mono = time.monotonic()
+            simulated_release_timestamp_ms = now_ms()
+            add_event("SIMULATED_RELEASE", roll_deg=0.0, pitch_deg=0.0)
+
+            trigger["timestamp_ms"] = now_ms()
+            udp_socket.sendto(json.dumps(trigger).encode("utf-8"), target_addr)
+            trigger_sent_mono = time.monotonic()
+            add_event(
+                "TRIGGER_SENT",
+                release_to_trigger_ms=round((trigger_sent_mono - simulated_release_mono) * 1000, 1),
+            )
+            next_trigger_send = trigger_sent_mono + 0.05
+            last_response = None
+            receipt_confirmed = False
+
+            while time.monotonic() < deadline:
+                now_mono = time.monotonic()
+                if now_mono >= next_trigger_send:
+                    trigger["timestamp_ms"] = now_ms()
+                    udp_socket.sendto(json.dumps(trigger).encode("utf-8"), target_addr)
+                    add_event("TRIGGER_RETRY")
+                    next_trigger_send = now_mono + (0.2 if receipt_confirmed else 0.05)
+
+                try:
+                    data, address = udp_socket.recvfrom(65535)
+                    response = json.loads(data.decode("utf-8"))
+                except socket.timeout:
+                    continue
+
+                if (
+                    response.get("type") not in (
+                        "CHILD_NAV_GATE_TRIGGER_ACK",
+                        "CHILD_NAV_GATE_TRIGGER_STATUS",
+                    )
+                    or response.get("relationship_id") != relationship_id
+                    or safe_int(response.get("seq"), -1) != seq
+                ):
+                    continue
+
+                last_response = response
+                state = str(response.get("state") or "UNKNOWN")
+                add_event(
+                    response.get("type"),
+                    accepted=bool(response.get("accepted", True)),
+                    state=state,
+                    reason=response.get("reason"),
+                    remote=f"{address[0]}:{address[1]}",
+                )
+
+                if response.get("accepted") is False or state == "REJECTED":
+                    return {
+                        "ok": False,
+                        "accepted": False,
+                        "reason": response.get("reason") or "trigger_rejected",
+                        "state": state,
+                        "source_vehicle_id": source_vehicle_id,
+                        "target_vehicle_id": target_vehicle.vehicle_id,
+                        "seq": seq,
+                        "relationship_id": relationship_id,
+                        "prepare_token": prepare_token,
+                        "simulated_release_timestamp_ms": simulated_release_timestamp_ms,
+                        "events": events,
+                        "result": response,
+                    }
+
+                if state in ("TRIGGER_RECEIVED", "ACK_RECEIVED", "FC_TRIGGER_FAILED"):
+                    receipt_confirmed = True
+
+                if state == "FORWARDED_TO_FC":
+                    return {
+                        "ok": True,
+                        "accepted": True,
+                        "reason": response.get("reason") or "nav_gate_trigger_forwarded_to_fc",
+                        "state": state,
+                        "source": "DUMMY_UI",
+                        "source_vehicle_id": source_vehicle_id,
+                        "target_vehicle_id": target_vehicle.vehicle_id,
+                        "seq": seq,
+                        "relationship_id": relationship_id,
+                        "prepare_token": prepare_token,
+                        "simulated_release_timestamp_ms": simulated_release_timestamp_ms,
+                        "release_to_trigger_ms": round((trigger_sent_mono - simulated_release_mono) * 1000, 1),
+                        "duration_ms": elapsed_ms(),
+                        "events": events,
+                        "result": response,
+                    }
+
+            return {
+                "ok": False,
+                "accepted": receipt_confirmed,
+                "reason": "fc_terminal_status_timeout" if receipt_confirmed else "child_trigger_receipt_timeout",
+                "state": (last_response or {}).get("state") or "TRIGGER_TIMEOUT",
+                "source_vehicle_id": source_vehicle_id,
+                "target_vehicle_id": target_vehicle.vehicle_id,
+                "seq": seq,
+                "relationship_id": relationship_id,
+                "prepare_token": prepare_token,
+                "simulated_release_timestamp_ms": simulated_release_timestamp_ms,
+                "events": events,
+                "result": last_response,
+            }
+
+    except Exception as error:
+        return {
+            "ok": False,
+            "accepted": False,
+            "reason": "send_error",
+            "message": str(error),
+            "source_vehicle_id": source_vehicle_id,
+            "target_vehicle_id": target_vehicle.vehicle_id,
+            "seq": seq,
+            "relationship_id": relationship_id,
+            "prepare_token": prepare_token,
+            "events": events,
         }
 
 
@@ -1195,6 +1419,70 @@ def manual_release_trigger(vehicle_id: str, request: ManualReleaseTriggerRequest
         carrier_vehicle,
         target_vehicle,
         seq=request.seq,
+    )
+
+
+@app.post("/api/drones/{vehicle_id}/simulated-release-trigger")
+def simulated_release_trigger(vehicle_id: str, request: SimulatedReleaseTriggerRequest):
+    target_vehicle = known_drone_configs.get(vehicle_id)
+    if not target_vehicle:
+        raise HTTPException(
+            status_code=404,
+            detail={"ok": False, "reason": "target_vehicle_not_found", "vehicle_id": vehicle_id},
+        )
+    if normalize_vehicle_role(target_vehicle.role) != "child":
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "target_vehicle_must_be_child", "vehicle_id": vehicle_id},
+        )
+    if not target_vehicle.ip or not target_vehicle.udp_port:
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "reason": "missing_target_endpoint", "vehicle_id": vehicle_id},
+        )
+
+    # Re-check the Child at action time. The UI uses the same gate, but the
+    # backend must not depend on a browser-only safety check.
+    preflight = refresh_vehicle_status(target_vehicle, seq=now_ms(), timeout_sec=1.0)
+    attitude = preflight.get("attitude") if isinstance(preflight, dict) else None
+    roll_rad = attitude.get("roll_rad") if isinstance(attitude, dict) else None
+    pitch_rad = attitude.get("pitch_rad") if isinstance(attitude, dict) else None
+    attitude_fresh = isinstance(attitude, dict) and attitude.get("fresh") is True
+    level_within_2_deg = (
+        attitude_fresh
+        and isinstance(roll_rad, (int, float))
+        and isinstance(pitch_rad, (int, float))
+        and math.isfinite(roll_rad)
+        and math.isfinite(pitch_rad)
+        and abs(math.degrees(roll_rad)) <= 2.0
+        and abs(math.degrees(pitch_rad)) <= 2.0
+    )
+    if (
+        preflight.get("state") != "CONNECTED"
+        or preflight.get("fc_connected") != "CONNECTED"
+        or not level_within_2_deg
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok": False,
+                "accepted": False,
+                "reason": "simulated_release_preflight_failed",
+                "vehicle_id": vehicle_id,
+                "companion_state": preflight.get("state"),
+                "fc_connected": preflight.get("fc_connected"),
+                "attitude_fresh": attitude_fresh,
+                "roll_deg": math.degrees(roll_rad) if isinstance(roll_rad, (int, float)) else None,
+                "pitch_deg": math.degrees(pitch_rad) if isinstance(pitch_rad, (int, float)) else None,
+                "required_tolerance_deg": 2.0,
+            },
+        )
+
+    return send_simulated_release_trigger(
+        target_vehicle,
+        source_vehicle_id=request.source_vehicle_id,
+        seq=request.seq,
+        timeout_ms=request.timeout_ms,
     )
 
 

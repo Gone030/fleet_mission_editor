@@ -629,6 +629,61 @@
       border-radius: 8px;
       background: #0b1220;
     }
+    .release-trigger-session {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1220;
+    }
+    .release-trigger-session-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .release-trigger-steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .release-trigger-step {
+      min-width: 0;
+      padding: 5px 3px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 800;
+      text-align: center;
+    }
+    .release-trigger-step.is-active { color: var(--accent); border-color: rgba(56, 189, 248, .55); }
+    .release-trigger-step.is-ok { color: var(--ok); border-color: rgba(52, 211, 153, .55); }
+    .release-trigger-step.is-warn { color: var(--warn); border-color: rgba(251, 191, 36, .55); }
+    .release-trigger-step.is-failed { color: var(--danger); border-color: rgba(248, 113, 113, .55); }
+    .release-trigger-primary,
+    .release-trigger-navigation {
+      margin-top: 7px;
+      color: var(--text);
+      font-size: 11px;
+      line-height: 1.4;
+      font-variant-numeric: tabular-nums;
+    }
+    .release-trigger-navigation { color: var(--muted); }
+    .release-trigger-details,
+    .nav-gate-timing-details {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .release-trigger-details summary,
+    .nav-gate-timing-details summary,
+    .nav-gate-diagnostic-group > summary {
+      cursor: pointer;
+      user-select: none;
+    }
     .nav-gate-diagnostics-head {
       display: flex;
       align-items: center;
@@ -649,6 +704,11 @@
       border-radius: 7px;
       background: rgba(2, 6, 23, .42);
     }
+    .nav-gate-diagnostic-group > summary {
+      list-style: none;
+    }
+    .nav-gate-diagnostic-group > summary::-webkit-details-marker { display: none; }
+    .nav-gate-diagnostic-group[open] > summary { margin-bottom: 4px; }
     .nav-gate-diagnostic-group-head {
       display: flex;
       align-items: flex-start;

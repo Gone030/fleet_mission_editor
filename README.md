@@ -71,6 +71,11 @@ Carrier-01
 * 간단한 local sanity check
 * Carrier-Child companion link test
 * Carrier manual release + trigger 실행
+* Carrier 없이 선택한 Child에 PREPARE → 모의 릴리즈 → 즉시 트리거 실행
+  * 실제 릴리즈 액추에이터는 구동하지 않음
+  * Child 자세 telemetry가 roll/pitch 각각 ±2° 이내일 때만 실행 버튼 활성화
+  * Child FC의 `NAV_G_ARM_DLY` 이후 실제 arming/BOOST가 발생할 수 있음
+* Release / Trigger session 요약과 GPS/heading/EKF/NAV_GATE 진단 상시 표시
 
 ## 아직 지원하지 않는 기능
 
@@ -150,6 +155,7 @@ POST /api/drones/connect
 GET  /api/drones/status
 POST /api/drones/{vehicle_id}/emergency
 POST /api/drones/{vehicle_id}/manual-release-trigger
+POST /api/drones/{vehicle_id}/simulated-release-trigger
 POST /api/drone/runtime-reset
 POST /api/drone/mission-clear
 POST /api/drone/mission-start
