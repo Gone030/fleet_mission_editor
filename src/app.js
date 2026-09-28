@@ -41,6 +41,7 @@ const runtimeState = {
   simulatedReleaseTriggerState: 'IDLE',
   simulatedReleaseTriggerResult: null,
   simulatedReleaseTargetVehicleId: null,
+  simulatedReleaseCountdownSeconds: null,
   runtimeResetState: 'IDLE',
   runtimeResetResult: null,
   missionClearState: 'IDLE',
@@ -506,6 +507,7 @@ function clearCompanionCommandResults() {
   runtimeState.simulatedReleaseTriggerState = 'IDLE';
   runtimeState.simulatedReleaseTriggerResult = null;
   runtimeState.simulatedReleaseTargetVehicleId = null;
+  runtimeState.simulatedReleaseCountdownSeconds = null;
   runtimeState.runtimeResetState = 'IDLE';
   runtimeState.runtimeResetResult = null;
   runtimeState.missionClearState = 'IDLE';
@@ -1528,6 +1530,14 @@ function renderCompanionTestPrep() {
   const releaseTriggerTarget = getReleaseTriggerTarget(vehicle, manualTarget);
   const backendOnline = runtimeState.status === 'BACKEND ONLINE';
 
+  const countdown = document.getElementById('simulatedReleaseCountdown');
+  const countdownValue = document.getElementById('simulatedReleaseCountdownValue');
+  const countdownActive = Number.isInteger(runtimeState.simulatedReleaseCountdownSeconds);
+  if (countdown && countdownValue) {
+    countdown.classList.toggle('hidden', !countdownActive);
+    countdownValue.textContent = countdownActive ? String(runtimeState.simulatedReleaseCountdownSeconds) : '';
+  }
+
   renderReleaseTriggerSession(releaseTriggerTarget);
 
   if (simulatedButton && simulatedResultBox) {
@@ -1536,9 +1546,13 @@ function renderCompanionTestPrep() {
     const attitude = getChildAttitudeReadiness(connection);
     const companionReady = connection?.companion_state === 'CONNECTED';
     const fcReady = connection?.fc_connected === 'CONNECTED';
-    const isBusy = runtimeState.simulatedReleaseTriggerState === 'SENDING';
+    const isBusy = ['COUNTDOWN', 'SENDING'].includes(runtimeState.simulatedReleaseTriggerState);
     simulatedButton.disabled = !selectedIsChild || !backendOnline || !companionReady || !fcReady || !attitude.withinTolerance || isBusy;
-    simulatedButton.textContent = isBusy ? '모의 릴리즈 트리거 진행 중...' : '자드론 모의 릴리즈 트리거';
+    simulatedButton.textContent = runtimeState.simulatedReleaseTriggerState === 'COUNTDOWN'
+      ? `단독 트리거 ${runtimeState.simulatedReleaseCountdownSeconds}초 전`
+      : runtimeState.simulatedReleaseTriggerState === 'SENDING'
+        ? '모의 릴리즈 트리거 진행 중...'
+        : '자드론 모의 릴리즈 트리거';
 
     if (!selectedIsChild) {
       simulatedResultBox.textContent = 'Select a Child directly. Carrier connection is not required.';
@@ -2394,7 +2408,7 @@ async function clearFcMission() {
 
 async function executeSimulatedReleaseTrigger() {
   const targetVehicle = getSelectedVehicle();
-  const seq = Date.now();
+  let seq = Date.now();
   const connection = targetVehicle ? runtimeState.vehicleConnections[targetVehicle.vehicle_id] : null;
   const attitude = getChildAttitudeReadiness(connection);
 
@@ -2425,6 +2439,7 @@ async function executeSimulatedReleaseTrigger() {
 
   const confirmed = window.confirm(
     `${targetVehicle.name || targetVehicle.vehicle_id}에 실제 NAV_GATE 트리거를 전송합니다.\n\n` +
+    `확인 후 화면 중앙에서 3초를 카운트하고 트리거를 전송합니다.\n` +
     `물리 릴리즈는 동작하지 않지만 약 100ms 후 실제 아밍·모터 출력·BOOST가 발생할 수 있습니다.\n` +
     `현재 자세 R${attitude.rollDeg.toFixed(1)}° / P${attitude.pitchDeg.toFixed(1)}°\n\n` +
     `안전 준비가 완료된 경우에만 확인을 누르세요.`
@@ -2432,6 +2447,46 @@ async function executeSimulatedReleaseTrigger() {
   if (!confirmed) return;
 
   runtimeState.simulatedReleaseTargetVehicleId = targetVehicle.vehicle_id;
+  runtimeState.simulatedReleaseTriggerState = 'COUNTDOWN';
+  runtimeState.simulatedReleaseTriggerResult = {
+    ok: false,
+    accepted: false,
+    source: 'DUMMY_UI',
+    target_vehicle_id: targetVehicle.vehicle_id,
+    seq,
+    reason: 'countdown',
+    events: [],
+  };
+
+  for (let seconds = 3; seconds >= 1; seconds -= 1) {
+    runtimeState.simulatedReleaseCountdownSeconds = seconds;
+    renderCompanionTestPrep();
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  runtimeState.simulatedReleaseCountdownSeconds = null;
+
+  const latestConnection = runtimeState.vehicleConnections[targetVehicle.vehicle_id];
+  const latestAttitude = getChildAttitudeReadiness(latestConnection);
+  const stillReady = runtimeState.status === 'BACKEND ONLINE'
+    && latestConnection?.companion_state === 'CONNECTED'
+    && latestConnection?.fc_connected === 'CONNECTED'
+    && latestAttitude.withinTolerance;
+  if (!stillReady) {
+    runtimeState.simulatedReleaseTriggerState = 'FAILED';
+    runtimeState.simulatedReleaseTriggerResult = {
+      ok: false,
+      accepted: false,
+      source: 'DUMMY_UI',
+      target_vehicle_id: targetVehicle.vehicle_id,
+      seq,
+      reason: 'safety_check_changed_during_countdown',
+      events: [],
+    };
+    renderCompanionTestPrep();
+    return;
+  }
+
+  seq = Date.now();
   runtimeState.simulatedReleaseTriggerState = 'SENDING';
   runtimeState.simulatedReleaseTriggerResult = {
     ok: false,
