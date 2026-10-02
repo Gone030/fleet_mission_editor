@@ -73,7 +73,8 @@ Carrier-01
 * Carrier manual release + trigger 실행
 * Carrier 없이 선택한 Child에 PREPARE → 모의 릴리즈 → 즉시 트리거 실행
   * 실제 릴리즈 액추에이터는 구동하지 않음
-  * Child 자세 telemetry가 roll/pitch 각각 ±2° 이내일 때만 실행 버튼 활성화
+  * Child 자세 telemetry의 roll/pitch 허용각은 UI에서 ±2~10°로 조정 가능하며 기본값은 ±5°
+  * 선택한 허용각은 브라우저에 저장되고 backend 최종검사에도 동일하게 적용
   * Child FC의 `NAV_G_ARM_DLY` 이후 실제 arming/BOOST가 발생할 수 있음
 * Release / Trigger session 요약과 GPS/heading/EKF/NAV_GATE 진단 상시 표시
 

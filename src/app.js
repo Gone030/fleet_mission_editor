@@ -12,6 +12,31 @@ const INITIAL_MISSION_PACKAGE = {
   },
 };
 
+const SIMULATED_RELEASE_LEVEL_TOLERANCE_STORAGE_KEY = 'fleetMissionEditor.simulatedReleaseLevelToleranceDeg';
+const SIMULATED_RELEASE_LEVEL_TOLERANCE_DEFAULT_DEG = 5;
+const SIMULATED_RELEASE_LEVEL_TOLERANCE_MIN_DEG = 2;
+const SIMULATED_RELEASE_LEVEL_TOLERANCE_MAX_DEG = 10;
+
+function clampSimulatedReleaseLevelTolerance(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return SIMULATED_RELEASE_LEVEL_TOLERANCE_DEFAULT_DEG;
+  return Math.min(
+    SIMULATED_RELEASE_LEVEL_TOLERANCE_MAX_DEG,
+    Math.max(SIMULATED_RELEASE_LEVEL_TOLERANCE_MIN_DEG, numeric)
+  );
+}
+
+function loadSimulatedReleaseLevelTolerance() {
+  try {
+    const savedValue = window.localStorage.getItem(SIMULATED_RELEASE_LEVEL_TOLERANCE_STORAGE_KEY);
+    return savedValue === null
+      ? SIMULATED_RELEASE_LEVEL_TOLERANCE_DEFAULT_DEG
+      : clampSimulatedReleaseLevelTolerance(savedValue);
+  } catch (_error) {
+    return SIMULATED_RELEASE_LEVEL_TOLERANCE_DEFAULT_DEG;
+  }
+}
+
 let state = JSON.parse(JSON.stringify(INITIAL_MISSION_PACKAGE));
 state.selectedVehicleId = null;
 
@@ -42,6 +67,7 @@ const runtimeState = {
   simulatedReleaseTriggerResult: null,
   simulatedReleaseTargetVehicleId: null,
   simulatedReleaseCountdownSeconds: null,
+  simulatedReleaseLevelToleranceDeg: loadSimulatedReleaseLevelTolerance(),
   runtimeResetState: 'IDLE',
   runtimeResetResult: null,
   missionClearState: 'IDLE',
@@ -396,12 +422,37 @@ const liveDroneMarkers = new Map();
 
 
 let map = null;
+let mapTileLayer = null;
+
+function mapTileUrl() {
+  return `${runtimeState.backendUrl.replace(/\/$/, '')}/api/map/tiles/osm/{z}/{x}/{y}.png`;
+}
 
 function setMapStatus(message = '') {
   const banner = document.getElementById('mapStatusBanner');
   if (!banner) return;
   banner.textContent = message;
   banner.classList.toggle('hidden', !message);
+}
+
+function initializeMapTiles() {
+  const tileLayer = L.tileLayer(mapTileUrl(), {
+    maxZoom: 20,
+    maxNativeZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+  });
+  mapTileLayer = tileLayer;
+  let tileErrorShown = false;
+  tileLayer.on('loading', () => { tileErrorShown = false; });
+  tileLayer.on('tileerror', () => {
+    if (tileErrorShown) return;
+    tileErrorShown = true;
+    setMapStatus('일부 지도 타일을 불러오지 못했습니다. 저장되지 않은 지역·확대 수준이거나 Backend 연결 문제일 수 있습니다. 기체 연결 및 미션 기능은 별도로 동작합니다.');
+  });
+  tileLayer.on('load', () => {
+    if (!tileErrorShown) setMapStatus('');
+  });
+  tileLayer.addTo(map);
 }
 
 function initializeMap() {
@@ -412,17 +463,7 @@ function initializeMap() {
 
   try {
     map = L.map('map').setView([36.3504, 127.3845], 14);
-    const tileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 20,
-      attribution: "&copy; OpenStreetMap contributors",
-    });
-    let tileErrorShown = false;
-    tileLayer.on('tileerror', () => {
-      if (tileErrorShown) return;
-      tileErrorShown = true;
-      setMapStatus('인터넷 연결이 없어 배경 지도를 표시할 수 없습니다. 기체 연결 및 상태 기능은 정상 동작합니다.');
-    });
-    tileLayer.addTo(map);
+    initializeMapTiles();
     map.on('click', (e) => addWaypoint(e.latlng.lat, e.latlng.lng));
   } catch (error) {
     console.error('Map initialization failed:', error);
@@ -461,6 +502,7 @@ onElement('saveConnBtn', 'click', saveConnectionForm);
 onElement('executeEmergencyBtn', 'click', executeEmergencyAction);
 onElement('manualReleaseTriggerBtn', 'click', executeManualReleaseTrigger);
 onElement('simulatedReleaseTriggerBtn', 'click', executeSimulatedReleaseTrigger);
+onElement('simulatedReleaseLevelTolerance', 'change', updateSimulatedReleaseLevelTolerance);
 onElement('debugChildKillBtn', 'click', executeDebugChildKill);
 onElement('debugChildLandBtn', 'click', executeDebugChildLand);
 onElement('resetRuntimeStateBtn', 'click', resetRuntimeState);
@@ -1398,17 +1440,57 @@ function renderNavGateDiagnostics(selectedVehicle, manualTarget) {
   timingBox.appendChild(live);
 }
 
-function getChildAttitudeReadiness(connection) {
+function getSimulatedReleaseLevelToleranceDeg() {
+  return clampSimulatedReleaseLevelTolerance(runtimeState.simulatedReleaseLevelToleranceDeg);
+}
+
+function updateSimulatedReleaseLevelTolerance(event) {
+  const toleranceDeg = clampSimulatedReleaseLevelTolerance(event?.target?.value);
+  runtimeState.simulatedReleaseLevelToleranceDeg = toleranceDeg;
+  if (event?.target) event.target.value = String(toleranceDeg);
+  try {
+    window.localStorage.setItem(SIMULATED_RELEASE_LEVEL_TOLERANCE_STORAGE_KEY, String(toleranceDeg));
+  } catch (_error) {
+    // Keep the selected value for this session when persistent storage is unavailable.
+  }
+  renderCompanionTestPrep();
+}
+
+function getChildAttitudeReadiness(connection, toleranceDeg = getSimulatedReleaseLevelToleranceDeg()) {
   const attitude = connection?.attitude || {};
   const rollRad = Number(attitude.roll_rad);
   const pitchRad = Number(attitude.pitch_rad);
-  const rollDeg = Number.isFinite(rollRad) ? rollRad * 180 / Math.PI : null;
-  const pitchDeg = Number.isFinite(pitchRad) ? pitchRad * 180 / Math.PI : null;
-  const fresh = attitude.fresh === true;
+  let rollDeg = Number.isFinite(rollRad) ? rollRad * 180 / Math.PI : null;
+  let pitchDeg = Number.isFinite(pitchRad) ? pitchRad * 180 / Math.PI : null;
+  let fresh = attitude.fresh === true;
+  let ageMs = attitude.age_ms ?? null;
+
+  // Deployed NAV_GATE runtimes may not expose the generic attitude object,
+  // while publishing the same live FC attitude in NAV_GATE diagnostics.
+  if (!fresh || rollDeg === null || pitchDeg === null) {
+    const navGate = connection?.nav_gate || {};
+    const timing = navGate.timing || {};
+    const rawRollDeg = Number(timing.raw_roll_deg);
+    const rawPitchDeg = Number(timing.raw_pitch_deg);
+    const navGateAgeMs = Number(navGate.timing_age_ms ?? navGate.age_ms);
+    const navGateStaleMs = Number(navGate.stale_ms ?? 2500);
+    const navGateFresh = navGate.valid === true
+      && navGate.stale !== true
+      && timing.attitude_status_current === true
+      && Number.isFinite(navGateAgeMs)
+      && Number.isFinite(navGateStaleMs)
+      && navGateAgeMs <= navGateStaleMs;
+    if (navGateFresh && Number.isFinite(rawRollDeg) && Number.isFinite(rawPitchDeg)) {
+      rollDeg = rawRollDeg;
+      pitchDeg = rawPitchDeg;
+      fresh = true;
+      ageMs = navGateAgeMs;
+    }
+  }
   const withinTolerance = fresh && rollDeg !== null && pitchDeg !== null
-    && Math.abs(rollDeg) <= 2.0
-    && Math.abs(pitchDeg) <= 2.0;
-  return { fresh, withinTolerance, rollDeg, pitchDeg, ageMs: attitude.age_ms ?? null };
+    && Math.abs(rollDeg) <= toleranceDeg
+    && Math.abs(pitchDeg) <= toleranceDeg;
+  return { fresh, withinTolerance, rollDeg, pitchDeg, ageMs, toleranceDeg };
 }
 
 function getReleaseTriggerTarget(selectedVehicle, manualTarget) {
@@ -1476,7 +1558,9 @@ function renderReleaseTriggerSession(target) {
   } else {
     const roll = attitude.rollDeg === null ? '-' : attitude.rollDeg.toFixed(1);
     const pitch = attitude.pitchDeg === null ? '-' : attitude.pitchDeg.toFixed(1);
-    const levelState = attitude.withinTolerance ? 'LEVEL READY' : attitude.fresh ? 'OUTSIDE ±2°' : 'LEVEL NO DATA';
+    const levelState = attitude.withinTolerance
+      ? 'LEVEL READY'
+      : attitude.fresh ? `OUTSIDE ±${attitude.toleranceDeg.toFixed(1)}°` : 'LEVEL NO DATA';
     primary.textContent = `${target.vehicle_id} · Companion ${connection?.companion_state || 'NO DATA'} · FC ${connection?.fc_connected || 'NO DATA'} · ${levelState} R${roll}° P${pitch}° · NAV_GATE ${diagnostic?.state || 'NO DATA'}`;
   }
 
@@ -1516,6 +1600,7 @@ function renderCompanionTestPrep() {
   const manualResultBox = document.getElementById('manualReleaseTriggerResult');
   const simulatedButton = document.getElementById('simulatedReleaseTriggerBtn');
   const simulatedResultBox = document.getElementById('simulatedReleaseTriggerResult');
+  const simulatedToleranceInput = document.getElementById('simulatedReleaseLevelTolerance');
   const debugKillButton = document.getElementById('debugChildKillBtn');
   const debugKillResultBox = document.getElementById('debugChildKillResult');
   const debugLandButton = document.getElementById('debugChildLandBtn');
@@ -1540,6 +1625,11 @@ function renderCompanionTestPrep() {
 
   renderReleaseTriggerSession(releaseTriggerTarget);
 
+  if (simulatedToleranceInput) {
+    simulatedToleranceInput.value = String(getSimulatedReleaseLevelToleranceDeg());
+    simulatedToleranceInput.disabled = ['COUNTDOWN', 'SENDING'].includes(runtimeState.simulatedReleaseTriggerState);
+  }
+
   if (simulatedButton && simulatedResultBox) {
     const selectedIsChild = vehicle && normalizeVehicleRole(vehicle.role) === 'child';
     const connection = selectedIsChild ? runtimeState.vehicleConnections[vehicle.vehicle_id] : null;
@@ -1563,7 +1653,7 @@ function renderCompanionTestPrep() {
     } else if (!attitude.fresh) {
       simulatedResultBox.textContent = 'Waiting for fresh Child attitude telemetry.';
     } else if (!attitude.withinTolerance) {
-      simulatedResultBox.textContent = `Level check failed: R${attitude.rollDeg.toFixed(1)}° P${attitude.pitchDeg.toFixed(1)}° (required ±2.0°).`;
+      simulatedResultBox.textContent = `Level check failed: R${attitude.rollDeg.toFixed(1)}° P${attitude.pitchDeg.toFixed(1)}° (required ±${attitude.toleranceDeg.toFixed(1)}°).`;
     } else if (runtimeState.simulatedReleaseTriggerResult) {
       simulatedResultBox.textContent = `${runtimeState.simulatedReleaseTriggerState}: ${runtimeState.simulatedReleaseTriggerResult.reason || '-'} / R${attitude.rollDeg.toFixed(1)}° P${attitude.pitchDeg.toFixed(1)}°`;
     } else {
@@ -2411,6 +2501,7 @@ async function executeSimulatedReleaseTrigger() {
   let seq = Date.now();
   const connection = targetVehicle ? runtimeState.vehicleConnections[targetVehicle.vehicle_id] : null;
   const attitude = getChildAttitudeReadiness(connection);
+  const levelToleranceDeg = attitude.toleranceDeg;
 
   if (!targetVehicle || normalizeVehicleRole(targetVehicle.role) !== 'child') {
     runtimeState.simulatedReleaseTriggerState = 'FAILED';
@@ -2430,7 +2521,8 @@ async function executeSimulatedReleaseTrigger() {
       ok: false,
       accepted: false,
       target_vehicle_id: targetVehicle.vehicle_id,
-      reason: attitude.fresh ? 'child_not_level_within_2_deg' : 'child_attitude_not_fresh',
+      reason: attitude.fresh ? 'child_not_level_within_tolerance' : 'child_attitude_not_fresh',
+      required_tolerance_deg: levelToleranceDeg,
       seq,
     };
     renderCompanionTestPrep();
@@ -2441,7 +2533,7 @@ async function executeSimulatedReleaseTrigger() {
     `${targetVehicle.name || targetVehicle.vehicle_id}에 실제 NAV_GATE 트리거를 전송합니다.\n\n` +
     `확인 후 화면 중앙에서 3초를 카운트하고 트리거를 전송합니다.\n` +
     `물리 릴리즈는 동작하지 않지만 약 100ms 후 실제 아밍·모터 출력·BOOST가 발생할 수 있습니다.\n` +
-    `현재 자세 R${attitude.rollDeg.toFixed(1)}° / P${attitude.pitchDeg.toFixed(1)}°\n\n` +
+    `현재 자세 R${attitude.rollDeg.toFixed(1)}° / P${attitude.pitchDeg.toFixed(1)}° · 허용 ±${levelToleranceDeg.toFixed(1)}°\n\n` +
     `안전 준비가 완료된 경우에만 확인을 누르세요.`
   );
   if (!confirmed) return;
@@ -2510,6 +2602,7 @@ async function executeSimulatedReleaseTrigger() {
           source_vehicle_id: targetVehicle.parent_vehicle_id || 'ui_dummy_carrier',
           seq,
           timeout_ms: 5000,
+          level_tolerance_deg: levelToleranceDeg,
         }),
       }
     );
@@ -2936,9 +3029,13 @@ function normalizeBackendUrl(value) {
 }
 
 function saveBackendUrl() {
+  const previousUrl = runtimeState.backendUrl;
   runtimeState.backendUrl = normalizeBackendUrl(
     document.getElementById('backendUrl').value
   );
+  if (mapTileLayer && runtimeState.backendUrl && previousUrl !== runtimeState.backendUrl) {
+    mapTileLayer.setUrl(mapTileUrl());
+  }
   if (!runtimeState.backendUrl) {
     runtimeState.status = 'ERROR';
     runtimeState.message = 'Backend URL을 입력하세요.';
@@ -4154,6 +4251,10 @@ function validateMissionForVehicle(mission, vehicle) {
   if (isChildVehicle(vehicle)) {
     warnings.push('자드론 미션 고도는 지상 기준 고도가 아니라 공중 Home 기준 offset입니다.');
     const first = mission.waypoints[0];
+    const last = mission.waypoints[mission.waypoints.length - 1];
+    if (getMavCommandForWaypoint(vehicle, mission.waypoints.length - 1, last) !== COMMAND.MAV_CMD_NAV_LAND) {
+      errors.push('자드론 미션의 마지막 item은 LAND여야 합니다.');
+    }
     if (getMavCommandForWaypoint(vehicle, 0, first) !== COMMAND.MAV_CMD_NAV_TAKEOFF && Number(first.alt) > 2) {
       warnings.push('Child WP1 altitude offset이 2m보다 큽니다. 초기 테스트는 0~1m를 권장합니다.');
     }

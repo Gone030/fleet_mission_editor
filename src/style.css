@@ -254,9 +254,9 @@
       display: none;
     }
     .trigger-countdown {
-      position: fixed;
+      position: absolute;
       inset: 0;
-      z-index: 6000;
+      z-index: 1200;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -276,7 +276,7 @@
     .trigger-countdown-value {
       margin-top: 8px;
       color: var(--danger);
-      font-size: clamp(120px, 30vw, 320px);
+      font-size: clamp(96px, 20vw, 220px);
       font-weight: 900;
       line-height: .9;
       font-variant-numeric: tabular-nums;
@@ -485,6 +485,19 @@
     .runtime-message {
       margin-top: 10px;
       min-height: 34px;
+    }
+    .simulated-trigger-controls {
+      display: grid;
+      gap: 6px;
+      margin-top: 12px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .02);
+    }
+    .simulated-trigger-controls input {
+      width: 100%;
+      margin-top: 4px;
     }
     .vehicle-connection-list {
       display: grid;

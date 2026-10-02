@@ -163,6 +163,10 @@
 
     <main id="map">
       <div id="mapStatusBanner" class="map-status-banner hidden" role="status"></div>
+      <div id="simulatedReleaseCountdown" class="trigger-countdown hidden" role="status" aria-live="assertive" aria-label="Standalone child trigger countdown">
+        <div class="trigger-countdown-label">자드론 단독 트리거</div>
+        <div id="simulatedReleaseCountdownValue" class="trigger-countdown-value">3</div>
+      </div>
       <div class="mission-start-overlay">
         <button id="missionStartBtn" class="mission-start-button" type="button" disabled title="검증된 Carrier 미션과 액션 플랜이 필요합니다.">
           미션 시작
@@ -300,6 +304,19 @@
             <div id="releaseTriggerDetailsBody" class="runtime-result muted">No details.</div>
           </details>
         </div>
+        <div class="simulated-trigger-controls">
+          <div>
+            <label for="simulatedReleaseLevelTolerance">단독 트리거 허용 기울기 (±°)</label>
+            <input id="simulatedReleaseLevelTolerance" type="number" min="2" max="10" step="0.5" value="5" />
+          </div>
+          <div class="hint">현장 조정 범위 2~10°. Roll과 pitch에 동일하게 적용됩니다.</div>
+        </div>
+        <button id="simulatedReleaseTriggerBtn" class="danger" type="button" style="width:100%; margin-top:10px;">
+          자드론 모의 릴리즈 트리거
+        </button>
+        <div id="simulatedReleaseTriggerResult" class="hint runtime-message">
+          Select a Child. Indicators remain visible without a live connection.
+        </div>
         <div id="navGateDiagnostics" class="nav-gate-diagnostics">
           <div class="nav-gate-diagnostics-head">
             <strong>Child sensor / EKF / NAV_GATE diagnostics</strong>
@@ -311,12 +328,6 @@
             <summary>FC timing / attitude 상세</summary>
             <div id="navGateTiming" class="nav-gate-timing"></div>
           </details>
-        </div>
-        <button id="simulatedReleaseTriggerBtn" class="danger" type="button" style="width:100%; margin-top:10px;">
-          자드론 모의 릴리즈 트리거
-        </button>
-        <div id="simulatedReleaseTriggerResult" class="hint runtime-message">
-          Select a Child. Indicators remain visible without a live connection.
         </div>
         <button id="manualReleaseTriggerBtn" class="primary" type="button" style="width:100%; margin-top:10px;">
           수동 릴리즈 + 트리거
@@ -344,11 +355,6 @@
       </div>
     </aside>
   </div>
-</div>
-
-<div id="simulatedReleaseCountdown" class="trigger-countdown hidden" role="status" aria-live="assertive" aria-label="Standalone child trigger countdown">
-  <div class="trigger-countdown-label">자드론 단독 트리거</div>
-  <div id="simulatedReleaseCountdownValue" class="trigger-countdown-value">3</div>
 </div>
 
 <div id="missionStartModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="missionStartModalTitle">

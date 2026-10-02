@@ -4,12 +4,18 @@ import socket
 import os
 import sys
 import time
+import threading
+import tempfile
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from email.utils import parsedate_to_datetime
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,8 +31,131 @@ SRC_DIR = PROJECT_ROOT / "src"
 INDEX_HTML = PROJECT_ROOT / "index.html"
 DATA_DIR = Path(os.environ.get("FLEET_MISSION_EDITOR_DATA_DIR", PROJECT_ROOT / "backend" / "data"))
 VEHICLES_PATH = DATA_DIR / "vehicles.json"
+MAP_CACHE_DIR = DATA_DIR / "map_cache" / "osm"
+MAP_CACHE_MAX_BYTES = 512 * 1024 * 1024
+_map_tile_locks = [threading.Lock() for _ in range(32)]
+_map_download_slots = threading.BoundedSemaphore(4)
+_map_prune_lock = threading.Lock()
+_map_last_prune = 0.0
+# Tile network waits must not consume FastAPI's shared vehicle-command pool.
+_map_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="map-cache")
+
+
+def _write_map_cache(path, data):
+    """Atomic replacement: an interrupted write must not destroy a usable tile."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
+            name = output.name
+            output.write(data)
+        os.replace(name, path)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
+
+
+def _prune_map_cache():
+    global _map_last_prune
+    if not _map_prune_lock.acquire(blocking=False):
+        return
+    try:
+        if time.monotonic() - _map_last_prune < 60:
+            return
+        _map_last_prune = time.monotonic()
+        tiles = [(p.stat().st_mtime, p.stat().st_size, p)
+                 for p in MAP_CACHE_DIR.glob("*/*/*.png")]
+        total = sum(size for _, size, _ in tiles)
+        for _, size, path in sorted(tiles):
+            if total <= MAP_CACHE_MAX_BYTES:
+                break
+            path.unlink(missing_ok=True)
+            path.with_suffix(".json").unlink(missing_ok=True)
+            total -= size
+    except OSError:
+        pass  # Cache maintenance must never affect vehicle control or tile delivery.
+    finally:
+        _map_prune_lock.release()
+
+
+def _map_tile_expiry(headers, now):
+    # Respect the provider's freshness lifetime; OSM requires a 7-day fallback
+    # when caching headers cannot be interpreted. This is not area prefetching.
+    for part in headers.get("Cache-Control", "").split(","):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "max-age":
+            try:
+                return now + max(0, int(value.strip('"')) - int(headers.get("Age", "0")))
+            except ValueError:
+                pass
+    try:
+        return parsedate_to_datetime(headers["Expires"]).timestamp()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return now + 7 * 24 * 60 * 60
+
+
+def get_cached_map_tile(z, x, y):
+    if not (0 <= z <= 19 and 0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        raise HTTPException(status_code=400, detail="Invalid map tile coordinates")
+    path = MAP_CACHE_DIR / str(z) / str(x) / f"{y}.png"
+    metadata_path = path.with_suffix(".json")
+    with _map_tile_locks[hash((z, x, y)) % len(_map_tile_locks)]:
+        cached = None
+        metadata = {}
+        try:
+            cached = path.read_bytes()
+            if not cached.startswith(b"\x89PNG\r\n\x1a\n"):
+                cached = None
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except (OSError, ValueError):
+            pass
+        now = time.time()
+        try:
+            fresh = float(metadata.get("expires_at", 0)) > now
+        except (TypeError, ValueError):
+            fresh = False
+        if cached and fresh:
+            return cached, "hit"
+        try:
+            request = Request(
+                f"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                headers={"User-Agent": "FleetMissionEditor/0.1 (interactive map cache)",
+                         "Accept": "image/png"},
+            )
+            with _map_download_slots, urlopen(request, timeout=3) as upstream:
+                data = upstream.read(2 * 1024 * 1024 + 1)
+                if len(data) > 2 * 1024 * 1024 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("Invalid map tile response")
+                cache_control = upstream.headers.get("Cache-Control", "").lower()
+                if "no-store" not in cache_control:
+                    expires_at = _map_tile_expiry(upstream.headers, now)
+                    if "no-cache" in cache_control:
+                        expires_at = now
+                    try:
+                        _write_map_cache(path, data)
+                        _write_map_cache(metadata_path, json.dumps({"expires_at": expires_at}).encode())
+                        _prune_map_cache()
+                    except OSError:
+                        pass  # Read-only/full disks must not prevent online display.
+                return data, "download"
+        except (OSError, ValueError):
+            if cached:
+                return cached, "offline-hit"
+            raise HTTPException(status_code=503, detail="Tile unavailable online and not cached")
 
 app = FastAPI(title="Fleet Runtime Backend", version="0.1.0")
+
+
+@app.get("/api/map/tiles/osm/{z}/{x}/{y}.png")
+async def map_tile(z: int, x: int, y: int):
+    data, source = await asyncio.get_running_loop().run_in_executor(
+        _map_executor, get_cached_map_tile, z, x, y,
+    )
+    return Response(data, media_type="image/png", headers={
+        "Cache-Control": "no-store", "X-Map-Cache": source,
+    })
 
 app.add_middleware(
     CORSMiddleware,
@@ -92,6 +221,7 @@ class SimulatedReleaseTriggerRequest(BaseModel):
     source_vehicle_id: str = "ui_dummy_carrier"
     seq: Optional[int] = None
     timeout_ms: int = Field(default=5000, ge=1000, le=15000)
+    level_tolerance_deg: float = Field(default=5.0, ge=2.0, le=10.0)
 
 
 class RuntimeStateResetRequest(BaseModel):
@@ -1448,19 +1578,55 @@ def simulated_release_trigger(vehicle_id: str, request: SimulatedReleaseTriggerR
     roll_rad = attitude.get("roll_rad") if isinstance(attitude, dict) else None
     pitch_rad = attitude.get("pitch_rad") if isinstance(attitude, dict) else None
     attitude_fresh = isinstance(attitude, dict) and attitude.get("fresh") is True
-    level_within_2_deg = (
+    roll_deg = math.degrees(roll_rad) if isinstance(roll_rad, (int, float)) else None
+    pitch_deg = math.degrees(pitch_rad) if isinstance(pitch_rad, (int, float)) else None
+
+    # Older deployed Child runtimes publish current FC attitude through the
+    # NAV_GATE diagnostic but leave the generic attitude object unset.
+    if not attitude_fresh or roll_deg is None or pitch_deg is None:
+        nav_gate = preflight.get("nav_gate") if isinstance(preflight, dict) else None
+        timing = nav_gate.get("timing") if isinstance(nav_gate, dict) else None
+        nav_gate_age_ms = (
+            nav_gate.get("timing_age_ms", nav_gate.get("age_ms"))
+            if isinstance(nav_gate, dict)
+            else None
+        )
+        nav_gate_stale_ms = nav_gate.get("stale_ms", 2500) if isinstance(nav_gate, dict) else 2500
+        raw_roll_deg = timing.get("raw_roll_deg") if isinstance(timing, dict) else None
+        raw_pitch_deg = timing.get("raw_pitch_deg") if isinstance(timing, dict) else None
+        nav_gate_fresh = (
+            isinstance(nav_gate, dict)
+            and nav_gate.get("valid") is True
+            and nav_gate.get("stale") is not True
+            and isinstance(timing, dict)
+            and timing.get("attitude_status_current") is True
+            and isinstance(nav_gate_age_ms, (int, float))
+            and isinstance(nav_gate_stale_ms, (int, float))
+            and nav_gate_age_ms <= nav_gate_stale_ms
+            and isinstance(raw_roll_deg, (int, float))
+            and isinstance(raw_pitch_deg, (int, float))
+            and math.isfinite(raw_roll_deg)
+            and math.isfinite(raw_pitch_deg)
+        )
+        if nav_gate_fresh:
+            attitude_fresh = True
+            roll_deg = raw_roll_deg
+            pitch_deg = raw_pitch_deg
+
+    level_tolerance_deg = float(request.level_tolerance_deg)
+    level_within_tolerance = (
         attitude_fresh
-        and isinstance(roll_rad, (int, float))
-        and isinstance(pitch_rad, (int, float))
-        and math.isfinite(roll_rad)
-        and math.isfinite(pitch_rad)
-        and abs(math.degrees(roll_rad)) <= 2.0
-        and abs(math.degrees(pitch_rad)) <= 2.0
+        and isinstance(roll_deg, (int, float))
+        and isinstance(pitch_deg, (int, float))
+        and math.isfinite(roll_deg)
+        and math.isfinite(pitch_deg)
+        and abs(roll_deg) <= level_tolerance_deg
+        and abs(pitch_deg) <= level_tolerance_deg
     )
     if (
-        preflight.get("state") != "CONNECTED"
+        preflight.get("connection_state") != "CONNECTED"
         or preflight.get("fc_connected") != "CONNECTED"
-        or not level_within_2_deg
+        or not level_within_tolerance
     ):
         raise HTTPException(
             status_code=409,
@@ -1469,12 +1635,12 @@ def simulated_release_trigger(vehicle_id: str, request: SimulatedReleaseTriggerR
                 "accepted": False,
                 "reason": "simulated_release_preflight_failed",
                 "vehicle_id": vehicle_id,
-                "companion_state": preflight.get("state"),
+                "companion_state": preflight.get("connection_state"),
                 "fc_connected": preflight.get("fc_connected"),
                 "attitude_fresh": attitude_fresh,
-                "roll_deg": math.degrees(roll_rad) if isinstance(roll_rad, (int, float)) else None,
-                "pitch_deg": math.degrees(pitch_rad) if isinstance(pitch_rad, (int, float)) else None,
-                "required_tolerance_deg": 2.0,
+                "roll_deg": roll_deg,
+                "pitch_deg": pitch_deg,
+                "required_tolerance_deg": level_tolerance_deg,
             },
         )
 
@@ -1808,6 +1974,8 @@ def validate_mission_upload_payload(payload):
             errors.append(f"item_{index}_position_must_be_number")
 
     if role == "child" and items:
+        if not isinstance(items[-1], dict) or items[-1].get("command") != MISSION_COMMAND_NAV_LAND:
+            errors.append("child_last_item_must_be_land")
         try:
             if items[0].get("command") != MISSION_COMMAND_NAV_TAKEOFF and float(items[0].get("z") or 0) > 2:
                 warnings.append("child_wp1_alt_offset_gt_2m")
