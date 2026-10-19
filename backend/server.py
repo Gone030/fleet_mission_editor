@@ -39,6 +39,10 @@ _map_prune_lock = threading.Lock()
 _map_last_prune = 0.0
 # Tile network waits must not consume FastAPI's shared vehicle-command pool.
 _map_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="map-cache")
+# Leave browser HTTP/1 connections available for health and vehicle commands.
+# Acquire before submitting, so slow/DNS-stalled downloads cannot build a queue.
+_map_request_slots = threading.BoundedSemaphore(2)
+MAP_RESPONSE_TIMEOUT_SEC = 2.0
 
 
 def _write_map_cache(path, data):
@@ -143,16 +147,32 @@ def get_cached_map_tile(z, x, y):
         except (OSError, ValueError):
             if cached:
                 return cached, "offline-hit"
-            raise HTTPException(status_code=503, detail="Tile unavailable online and not cached")
+            raise HTTPException(status_code=503, detail="Tile unavailable online and not cached",
+                                headers={"Cache-Control": "no-store"})
 
 app = FastAPI(title="Fleet Runtime Backend", version="0.1.0")
 
 
 @app.get("/api/map/tiles/osm/{z}/{x}/{y}.png")
 async def map_tile(z: int, x: int, y: int):
-    data, source = await asyncio.get_running_loop().run_in_executor(
-        _map_executor, get_cached_map_tile, z, x, y,
-    )
+    unavailable_headers = {"Cache-Control": "no-store", "Retry-After": "5"}
+    if not _map_request_slots.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="Map requests busy", headers=unavailable_headers)
+    try:
+        job = _map_executor.submit(get_cached_map_tile, z, x, y)
+    except BaseException:
+        _map_request_slots.release()
+        raise
+    # Release on actual worker completion, not HTTP timeout/cancellation.
+    # urllib/DNS work may outlive its response deadline.
+    job.add_done_callback(lambda _: _map_request_slots.release())
+    try:
+        data, source = await asyncio.wait_for(
+            asyncio.wrap_future(job), timeout=MAP_RESPONSE_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Map response timed out",
+                            headers=unavailable_headers) from None
     return Response(data, media_type="image/png", headers={
         "Cache-Control": "no-store", "X-Map-Cache": source,
     })
@@ -234,6 +254,13 @@ class RuntimeStateResetRequest(BaseModel):
 
 class MissionClearRequest(BaseModel):
     vehicle_id: str
+    seq: Optional[int] = None
+    execution_mode: str = "AUTO_MISSION"
+
+
+class MissionModeRequest(BaseModel):
+    vehicle_id: str
+    execution_mode: str
     seq: Optional[int] = None
 
 
@@ -449,6 +476,7 @@ def make_status_result(vehicle, state, reason, seq=None, message=None, latency_m
         "gps": health.get("gps"),
         "attitude": health.get("attitude"),
         "nav_gate": health.get("nav_gate"),
+        "offboard_mission": health.get("offboard_mission"),
         "mission": health.get("mission"),
         "mission_progress": health.get("mission_progress"),
         "action_plan": health.get("action_plan"),
@@ -1201,7 +1229,13 @@ def normalize_mission_item(item, index):
 
 def normalize_mission_payload_for_companion(payload):
     items = payload.get("items") or []
+    mode = payload.get("execution_mode", "AUTO_MISSION")
+    if mode not in ("AUTO_MISSION", "OFFBOARD"):
+        raise ValueError("invalid_mission_execution_mode")
+    if mode == "OFFBOARD" and normalize_vehicle_role(payload.get("role")) != "child":
+        raise ValueError("offboard_mission_child_only")
     return {
+        "execution_mode": mode,
         "vehicle_id": payload.get("vehicle_id"),
         "mission_id": payload.get("mission_id"),
         "role": normalize_vehicle_role(payload.get("role")),
@@ -1275,6 +1309,7 @@ def send_mission_upload(vehicle, payload):
         "mission_id": normalized["mission_id"],
         "role": normalized["role"],
         "mission_profile": normalized["mission_profile"],
+        "execution_mode": normalized["execution_mode"],
         "items": normalized["items"],
     }
     result = send_companion_mission_message(
@@ -1296,6 +1331,7 @@ def send_mission_download(vehicle, payload):
     seq = now_ms()
     message = {
         "type": "MISSION_DOWNLOAD",
+        "execution_mode": payload.get("execution_mode", "AUTO_MISSION"),
         "seq": seq,
         "vehicle_id": payload.get("vehicle_id"),
     }
@@ -1698,10 +1734,22 @@ def mission_clear(request: MissionClearRequest):
         vehicle,
         {
             "type": "MISSION_CLEAR",
+            "execution_mode": request.execution_mode,
             "seq": request.seq,
         },
         "MISSION_CLEAR_RESULT",
     )
+
+
+@app.post("/api/drone/mission-mode")
+def mission_mode(request: MissionModeRequest):
+    vehicle = get_command_vehicle_or_raise(request.vehicle_id)
+    if normalize_vehicle_role(vehicle.role) != "child" or request.execution_mode not in ("AUTO_MISSION", "OFFBOARD"):
+        raise HTTPException(status_code=400, detail="child_mission_mode_required")
+    return send_companion_command(vehicle, {
+        "type": "MISSION_MODE_SET", "vehicle_id": vehicle.vehicle_id, "seq": request.seq,
+        "execution_mode": request.execution_mode,
+    }, "MISSION_MODE_RESULT")
 
 
 def reject_mission_start(vehicle_id, reason, status_code=400, status_result=None):
@@ -1943,6 +1991,11 @@ def validate_mission_upload_payload(payload):
 
     items = payload.get("items")
     role = normalize_vehicle_role(payload.get("role"))
+    mode = payload.get("execution_mode", "AUTO_MISSION")
+    if mode not in ("AUTO_MISSION", "OFFBOARD"):
+        errors.append("invalid_mission_execution_mode")
+    if mode == "OFFBOARD" and role != "child":
+        errors.append("offboard_mission_child_only")
 
     if not payload.get("vehicle_id"):
         errors.append("vehicle_id_required")

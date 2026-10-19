@@ -222,6 +222,15 @@
 
       <div class="section">
         <h2>MISSION CONTROL</h2>
+        <div id="childMissionModeControl" class="hidden">
+          <label for="childMissionExecutionMode">자드론 임무 방식</label>
+          <select id="childMissionExecutionMode">
+            <option value="AUTO_MISSION">AUTO_MISSION (기존 PX4 미션)</option>
+            <option value="OFFBOARD">OFFBOARD (GPS + 제어용 EKF yaw)</option>
+          </select>
+          <button id="applyChildMissionModeBtn" type="button">실행 방식 적용</button>
+          <div id="childMissionExecutionStatus" class="hint" role="status"></div>
+        </div>
         <div id="childMissionControlHint" class="hint hidden" style="margin-bottom:10px;">
           자드론 미션은 nav_gate 트리거 이후 FC에서 진입합니다.
         </div>

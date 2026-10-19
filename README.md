@@ -78,6 +78,18 @@ Carrier-01
   * Child FC의 `NAV_G_ARM_DLY` 이후 실제 arming/BOOST가 발생할 수 있음
 * Release / Trigger session 요약과 GPS/heading/EKF/NAV_GATE 진단 상시 표시
 
+## 지도 타일 요청
+
+인터넷 없이 시작해도 UI와 기체 연결 기능은 지도와 독립적으로 동작한다.
+인터넷 재연결·화면 복귀·타이머에 따른 지도 자동 재다운로드는 하지 않는다.
+실패한 타일은 오류 안내만 표시하며, 필요한 경우 사용자가 UI를 새로고침한다.
+지도 이동·확대/축소 때 필요한 새 타일은 일반적인 방식으로 요청한다.
+기존에 표시된 타일과 backend 디스크 캐시는 유지하며, 저장되지 않은 지역은 인터넷이 필요하다.
+backend 타일 작업은 동시 2개로 제한하고, 타일 HTTP 응답 대기는 최대 2초로 제한한다.
+느린 지도 요청으로 브라우저 연결을 모두 점유해 backend 상태 확인·기체 명령이 대기하지 않도록 한다.
+
+회귀 테스트: `node --test src/map-tiles-no-auto-retry.test.cjs`, `.venv/bin/python -m unittest backend.test_map_cache`.
+
 ## 아직 지원하지 않는 기능
 
 * 여러 vehicle mission 동시 upload
@@ -300,3 +312,19 @@ Carrier → Child release/trigger 대상은 Carrier mission의 RELEASE waypoint 
 
 Fleet Mission Package export/import에는 runtime state가 포함되지 않는다.
 runtime state는 UI 내부 `runtimeState`와 backend `/api/drones/status` 결과로만 관리한다.
+
+## 2026-10-19 child OFFBOARD mission option
+
+MISSION CONTROL has AUTO_MISSION/OFFBOARD selection and explicit mode apply.
+Selection alone does not change the aircraft. Apply works without a mission;
+upload also applies the chosen execution mode. Device mode/phase and control-yaw
+availability are shown separately from strict heading diagnostics. Armed or
+prepared/active sessions reject edits. AUTO is the compatibility default.
+
+AUTO upload/readback/delete uses the FC store; OFFBOARD uses child companion RAM.
+Switching modes does not delete an old FC mission. OFFBOARD plans disappear on
+companion restart and never automatically resume. Height zero is trigger altitude,
+not FC Home or ground. LAND's zero does not command flight to ground-relative zero.
+Deploy the corresponding firmware and both child runtime Python files together.
+VM firmware build, desktop packaging, device upload and flight validation are not
+performed by this patch. Details: workspace companion_runtime/OFFBOARD_MISSION_DESIGN.md.

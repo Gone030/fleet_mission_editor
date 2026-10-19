@@ -442,15 +442,18 @@ function initializeMapTiles() {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
   });
   mapTileLayer = tileLayer;
-  let tileErrorShown = false;
-  tileLayer.on('loading', () => { tileErrorShown = false; });
-  tileLayer.on('tileerror', () => {
-    if (tileErrorShown) return;
-    tileErrorShown = true;
-    setMapStatus('일부 지도 타일을 불러오지 못했습니다. 저장되지 않은 지역·확대 수준이거나 Backend 연결 문제일 수 있습니다. 기체 연결 및 미션 기능은 별도로 동작합니다.');
+  const failedTiles = new Set();
+  tileLayer.on('tileerror', ({ tile }) => {
+    if (tile) failedTiles.add(tile);
+    setMapStatus('일부 지도 타일을 불러오지 못했습니다. 자동 재시도는 하지 않습니다. 필요하면 UI를 새로고침하세요. 기체 연결은 별도로 동작합니다.');
   });
-  tileLayer.on('load', () => {
-    if (!tileErrorShown) setMapStatus('');
+  tileLayer.on('tileload tileunload', ({ tile }) => {
+    failedTiles.delete(tile);
+    if (failedTiles.size === 0) setMapStatus('');
+  });
+  tileLayer.on('remove', () => {
+    failedTiles.clear();
+    setMapStatus('');
   });
   tileLayer.addTo(map);
 }
@@ -507,6 +510,31 @@ onElement('debugChildKillBtn', 'click', executeDebugChildKill);
 onElement('debugChildLandBtn', 'click', executeDebugChildLand);
 onElement('resetRuntimeStateBtn', 'click', resetRuntimeState);
 onElement('clearFcMissionBtn', 'click', clearFcMission);
+onElement('childMissionExecutionMode', 'change', (event) => {
+  const mission = getSelectedMission();
+  if (!mission) return;
+  mission.execution_mode = event.target.value;
+  mission.uploadState = 'Mode changed: apply or upload required';
+  clearMissionResultLog();
+  renderAll();
+});
+onElement('applyChildMissionModeBtn', 'click', async () => {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle || !isChildVehicle(vehicle) || !requireBackendOnlineForMissionAction()) return;
+  const button = document.getElementById('applyChildMissionModeBtn');
+  button.disabled = true;
+  try {
+    const result = await postDroneCommand('/api/drone/mission-mode', {
+      vehicle_id: vehicle.vehicle_id, execution_mode: getMissionExecutionMode(getSelectedMission(), vehicle), seq: Date.now(),
+    });
+    if (!result.ok && !result.accepted) throw new Error(result.reason || 'mode_rejected');
+    await refreshDroneConnections({ silent: true });
+  } catch (error) {
+    alert(`실행 방식 적용 실패: ${error.message}`);
+  } finally {
+    renderChildMissionMode();
+  }
+});
 onElement('uploadActionPlanBtn', 'click', uploadActionPlan);
 onElement('connectBackendBtn', 'click', connectBackend);
 onElement('refreshDroneStatusBtn', 'click', () => refreshDroneConnections());
@@ -1594,6 +1622,7 @@ function renderReleaseTriggerSession(target) {
 }
 
 function renderCompanionTestPrep() {
+  renderChildMissionMode();
   const vehicle = getSelectedVehicle();
   const isCarrier = vehicle && normalizeVehicleRole(vehicle.role) === 'carrier';
   const manualButton = document.getElementById('manualReleaseTriggerBtn');
@@ -1671,7 +1700,8 @@ function renderCompanionTestPrep() {
   if (clearButton && clearResultBox) {
     const isBusy = runtimeState.missionClearState === 'SENDING';
     clearButton.disabled = !vehicle || !backendOnline || isBusy;
-    clearButton.textContent = isBusy ? '삭제 중...' : 'FC 미션 삭제';
+    clearButton.textContent = isBusy ? '삭제 중...' :
+      (getMissionExecutionMode(getSelectedMission(), vehicle) === 'OFFBOARD' ? 'OFFBOARD 미션 삭제' : 'FC 미션 삭제');
     clearResultBox.textContent = formatMissionClearResult(vehicle);
   }
 
@@ -2474,6 +2504,7 @@ async function clearFcMission() {
   try {
     const responseBody = await postDroneCommand('/api/drone/mission-clear', {
       vehicle_id: vehicle.vehicle_id,
+      execution_mode: getMissionExecutionMode(getSelectedMission(), vehicle),
       seq,
     });
     runtimeState.missionClearResult = responseBody;
@@ -3343,6 +3374,7 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     gps: getDroneStatusValue(result, 'gps', existing.gps ?? null),
     attitude: getDroneStatusValue(result, 'attitude', existing.attitude ?? null),
     nav_gate: getDroneStatusValue(result, 'nav_gate', existing.nav_gate ?? null),
+    offboard_mission: getDroneStatusValue(result, 'offboard_mission', existing.offboard_mission ?? null),
     mission: getDroneStatusValue(result, 'mission', existing.mission ?? null),
     mission_progress: getDroneStatusValue(result, 'mission_progress', existing.mission_progress ?? null),
     action_plan: getDroneStatusValue(result, 'action_plan', existing.action_plan ?? null),
@@ -3932,6 +3964,8 @@ function getMissionProfile(vehicle) {
 }
 
 function getAltitudeReference(vehicle) {
+  const mission = state.missions.find((item) => item.vehicle_id === vehicle?.vehicle_id);
+  if (getMissionExecutionMode(mission, vehicle) === 'OFFBOARD') return 'trigger';
   return isChildVehicle(vehicle) ? 'air_arm_home' : 'ground_home';
 }
 
@@ -4843,7 +4877,7 @@ function buildMissionSummaryLines(mission, vehicle) {
   if (!mission || !vehicle) return [];
   applyWaypointMetadata(mission, vehicle);
   const roleLabel = formatVehicleRole(vehicle.role);
-  const profileLabel = isChildVehicle(vehicle)
+  const profileLabel = getMissionExecutionMode(mission, vehicle) === 'OFFBOARD' ? 'Trigger altitude relative (OFFBOARD)' : isChildVehicle(vehicle)
     ? 'Air-arm home relative'
     : 'Ground-home relative';
   const lines = [
@@ -4931,7 +4965,39 @@ function getSelectedActionPlanHtml() {
   return formatActionPlanRows(buildCarrierActionPlanPayload(mission, vehicle));
 }
 
+function getMissionExecutionMode(mission, vehicle) {
+  return vehicle && isChildVehicle(vehicle) && mission?.execution_mode === 'OFFBOARD'
+    ? 'OFFBOARD' : 'AUTO_MISSION';
+}
+
+function renderChildMissionMode() {
+  const vehicle = getSelectedVehicle();
+  const mission = getSelectedMission();
+  const container = document.getElementById('childMissionModeControl');
+  const select = document.getElementById('childMissionExecutionMode');
+  const status = document.getElementById('childMissionExecutionStatus');
+  if (!container || !select || !status) return;
+  container.classList.toggle('hidden', !vehicle || !isChildVehicle(vehicle));
+  const connection = vehicle ? getVehicleConnection(vehicle) : null;
+  const remote = connection?.offboard_mission;
+  select.value = getMissionExecutionMode(mission, vehicle);
+  select.disabled = !mission || connection?.mission_progress?.armed === true ||
+    ['PREPARED', 'RECOVERING', 'CLAIMING', 'RUNNING'].includes(remote?.phase);
+  const applyButton = document.getElementById('applyChildMissionModeBtn');
+  if (applyButton) applyButton.disabled = select.disabled || runtimeState.status !== 'BACKEND ONLINE';
+  const fresh = connection?.companion_state === 'CONNECTED' && Number.isFinite(remote?.control_age_ms)
+    && remote.control_age_ms <= 700;
+  const reference = select.value === 'OFFBOARD'
+    ? '고도 0 = 트리거 당시 고도. 미션은 현재 런타임 메모리에만 저장됩니다.'
+    : '고도 0 = 기존 FC 공중 Home. 기존 AUTO 미션 검사 적용.';
+  status.textContent = `${reference} 기기: ${remote?.mode || '미확인'} / ${remote?.phase || '-'} / WP ${remote?.index ?? '-'} / ` +
+    `제어용 yaw: ${fresh ? (remote.control?.yaw_usable ? '사용 가능' : '사용 불가') : '미확인/오래된 데이터'}` +
+    (remote?.error ? ` / ${remote.error}` : '') +
+    (remote?.mode && remote.mode !== select.value ? ' / 선택 변경 후 적용 또는 업로드 필요' : '');
+}
+
 function renderMissionSummary() {
+  renderChildMissionMode();
   const m = getSelectedMission();
   const selectedVehicle = getSelectedVehicle();
   const liveMarkerCount = [...liveDroneMarkers.values()]
@@ -4954,7 +5020,9 @@ function renderMissionSummary() {
   if (defaultAltLabel && altitudeHelp) {
     if (selectedVehicle && isChildVehicle(selectedVehicle)) {
       defaultAltLabel.textContent = '기본 Offset m';
-      altitudeHelp.textContent = 'Altitude Offset / Air-arm home relative altitude. 0m는 nav_gate 공중 Home 고도 유지를 의미합니다.';
+      altitudeHelp.textContent = getMissionExecutionMode(m, selectedVehicle) === 'OFFBOARD'
+        ? 'Altitude Offset / 0m는 트리거 당시 고도입니다. 회복·복귀 단계에서는 안정화된 고도를 유지합니다.'
+        : 'Altitude Offset / Air-arm home relative altitude. 0m는 nav_gate 공중 Home 고도 유지를 의미합니다.';
       if (m && m.waypoints.length === 0) {
         document.getElementById('defaultAlt').value = 0;
       }
@@ -4973,7 +5041,8 @@ function renderMissionSummary() {
   }
   if (loadFcMissionButton) {
     loadFcMissionButton.disabled = !selectedVehicle || runtimeState.status !== 'BACKEND ONLINE';
-    loadFcMissionButton.textContent = 'FC 미션 불러오기';
+    loadFcMissionButton.textContent = getMissionExecutionMode(m, selectedVehicle) === 'OFFBOARD'
+      ? 'OFFBOARD 미션 불러오기' : 'FC 미션 불러오기';
   }
   if (uploadVerifyButton) {
     uploadVerifyButton.disabled = !m || runtimeState.status !== 'BACKEND ONLINE';
@@ -5067,7 +5136,8 @@ function buildMissionUploadPayload(mission, vehicle) {
     role: normalizeVehicleRole(vehicle.role),
     mission_id: mission.mission_id,
     mission_profile: getMissionProfile(vehicle),
-    altitude_reference: getAltitudeReference(vehicle),
+    execution_mode: getMissionExecutionMode(mission, vehicle),
+    altitude_reference: getMissionExecutionMode(mission, vehicle) === 'OFFBOARD' ? 'TRIGGER' : getAltitudeReference(vehicle),
     items: fcMissionItems.map(({ waypoint, ...item }) => item),
   };
 
