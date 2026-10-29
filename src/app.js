@@ -16,6 +16,8 @@ const SIMULATED_RELEASE_LEVEL_TOLERANCE_STORAGE_KEY = 'fleetMissionEditor.simula
 const SIMULATED_RELEASE_LEVEL_TOLERANCE_DEFAULT_DEG = 5;
 const SIMULATED_RELEASE_LEVEL_TOLERANCE_MIN_DEG = 2;
 const SIMULATED_RELEASE_LEVEL_TOLERANCE_MAX_DEG = 10;
+// Display freshness only. This never changes a vehicle's flight/link watchdog.
+const DRONE_CONTACT_STALE_MS = 5000;
 
 function clampSimulatedReleaseLevelTolerance(value) {
   const numeric = Number(value);
@@ -51,6 +53,7 @@ const runtimeState = {
   dronesConnecting: false,
   backendCheckInFlight: false,
   healthMonitorId: null,
+  connectionFreshnessTimer: null,
   dronePollingTimer: null,
   droneRefreshInFlight: false,
   consecutiveDronePollingFailures: 0,
@@ -1589,7 +1592,7 @@ function renderReleaseTriggerSession(target) {
     const levelState = attitude.withinTolerance
       ? 'LEVEL READY'
       : attitude.fresh ? `OUTSIDE ±${attitude.toleranceDeg.toFixed(1)}°` : 'LEVEL NO DATA';
-    primary.textContent = `${target.vehicle_id} · Companion ${connection?.companion_state || 'NO DATA'} · FC ${connection?.fc_connected || 'NO DATA'} · ${levelState} R${roll}° P${pitch}° · NAV_GATE ${diagnostic?.state || 'NO DATA'}`;
+    primary.textContent = `${target.vehicle_id} · Companion ${getDisplayedCompanionState(connection)} · FC ${getDisplayedFcState(connection)} · ${levelState} R${roll}° P${pitch}° · NAV_GATE ${diagnostic?.state || 'NO DATA'}`;
   }
 
   const gps = connection?.gps || {};
@@ -1663,8 +1666,8 @@ function renderCompanionTestPrep() {
     const selectedIsChild = vehicle && normalizeVehicleRole(vehicle.role) === 'child';
     const connection = selectedIsChild ? runtimeState.vehicleConnections[vehicle.vehicle_id] : null;
     const attitude = getChildAttitudeReadiness(connection);
-    const companionReady = connection?.companion_state === 'CONNECTED';
-    const fcReady = connection?.fc_connected === 'CONNECTED';
+    const companionReady = getDisplayedCompanionState(connection) === 'CONNECTED';
+    const fcReady = getDisplayedFcState(connection) === 'CONNECTED';
     const isBusy = ['COUNTDOWN', 'SENDING'].includes(runtimeState.simulatedReleaseTriggerState);
     simulatedButton.disabled = !selectedIsChild || !backendOnline || !companionReady || !fcReady || !attitude.withinTolerance || isBusy;
     simulatedButton.textContent = runtimeState.simulatedReleaseTriggerState === 'COUNTDOWN'
@@ -1678,7 +1681,7 @@ function renderCompanionTestPrep() {
     } else if (!backendOnline) {
       simulatedResultBox.textContent = 'Backend must be online.';
     } else if (!companionReady || !fcReady) {
-      simulatedResultBox.textContent = `Waiting: Companion ${connection?.companion_state || 'NO DATA'} / FC ${connection?.fc_connected || 'NO DATA'}.`;
+      simulatedResultBox.textContent = `Waiting: Companion ${getDisplayedCompanionState(connection)} / FC ${getDisplayedFcState(connection)}.`;
     } else if (!attitude.fresh) {
       simulatedResultBox.textContent = 'Waiting for fresh Child attitude telemetry.';
     } else if (!attitude.withinTolerance) {
@@ -2591,8 +2594,8 @@ async function executeSimulatedReleaseTrigger() {
   const latestConnection = runtimeState.vehicleConnections[targetVehicle.vehicle_id];
   const latestAttitude = getChildAttitudeReadiness(latestConnection);
   const stillReady = runtimeState.status === 'BACKEND ONLINE'
-    && latestConnection?.companion_state === 'CONNECTED'
-    && latestConnection?.fc_connected === 'CONNECTED'
+    && getDisplayedCompanionState(latestConnection) === 'CONNECTED'
+    && getDisplayedFcState(latestConnection) === 'CONNECTED'
     && latestAttitude.withinTolerance;
   if (!stillReady) {
     runtimeState.simulatedReleaseTriggerState = 'FAILED';
@@ -3046,6 +3049,7 @@ function markRuntimeSeen(vehicleId, response = {}) {
     ...current,
     vehicle_id: vehicleId,
     last_seen_ms: now,
+    last_confirmed_contact_ms: now,
     last_contact_ms: now,
     last_status_type: responseType,
     companion_alive: health.companion_alive ?? current.companion_alive ?? null,
@@ -3169,6 +3173,16 @@ function startBackendHealthMonitor() {
   runtimeState.healthMonitorId = window.setInterval(() => {
     checkBackendHealth();
   }, 3000);
+  if (!runtimeState.connectionFreshnessTimer) {
+    runtimeState.connectionFreshnessTimer = window.setInterval(() => {
+      if (!expireStaleDroneConnections()) return;
+      renderRuntimeConnection();
+      renderEmergencyControls();
+      renderCompanionTestPrep();
+      renderMissionSummary();
+      renderMissionMonitor();
+    }, 1000);
+  }
 }
 
 function buildDroneConnectionPayload() {
@@ -3244,6 +3258,9 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
     companion_state: existing.companion_state || 'UNKNOWN',
     fc_connected: existing.fc_connected || 'UNKNOWN',
     last_seen_ms: existing.last_seen_ms ?? null,
+    last_confirmed_contact_ms: existing.last_confirmed_contact_ms ?? null,
+    last_status_result_ms: existing.last_status_result_ms ?? null,
+    last_status_observed_ms: existing.last_status_observed_ms ?? null,
     last_contact_ms: existing.last_contact_ms ?? null,
     last_status_type: existing.last_status_type ?? null,
     companion_alive: existing.companion_alive ?? null,
@@ -3283,7 +3300,7 @@ function buildUnknownDroneConnection(vehicle, existing = {}) {
 }
 
 function isKnownRuntimeConnectionState(value) {
-  return ['UNKNOWN', 'CONNECTING', 'CONNECTED', 'OFFLINE', 'ERROR', 'DISCONNECTED'].includes(value);
+  return ['UNKNOWN', 'CONNECTING', 'CONNECTED', 'OFFLINE', 'ERROR', 'DISCONNECTED', 'STALE'].includes(value);
 }
 
 function normalizeRuntimeConnectionState(value) {
@@ -3310,28 +3327,37 @@ function getDroneStatusType(result, existing = {}) {
   return result?.type || result?.response?.type || result?.status_type || existing.last_status_type || null;
 }
 
-function getCompanionConnectionState(result, existing = {}) {
-  const statusType = getDroneStatusType(result, existing);
-  const companionAlive = getDroneStatusValue(result, 'companion_alive', existing.companion_alive ?? null);
+function getCompanionConnectionState(result) {
+  const explicitState = normalizeRuntimeConnectionState(result?.companion_state)
+    || normalizeRuntimeConnectionState(result?.connection_state);
+  // A new failure must win over health from a previous successful STATUS.
+  if (explicitState && explicitState !== 'CONNECTED') return explicitState;
+  const statusType = getDroneStatusType(result);
+  const companionAlive = getDroneStatusValue(result, 'companion_alive');
   if (statusType === 'STATUS' && companionAlive === true) return 'CONNECTED';
   if (statusType === 'STATUS' && companionAlive === false) return 'OFFLINE';
 
-  return (
-    normalizeRuntimeConnectionState(result?.companion_state) ||
-    normalizeRuntimeConnectionState(result?.connection_state) ||
-    normalizeRuntimeConnectionState(existing.companion_state) ||
-    normalizeRuntimeConnectionState(existing.connection_state) ||
-    'UNKNOWN'
-  );
+  return explicitState || 'UNKNOWN';
 }
 
 function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
   const vehicle = getVehicles().find((item) => item.vehicle_id === vehicleId);
-  const statusType = getDroneStatusType(result, existing);
-  const companionAlive = getDroneStatusValue(result, 'companion_alive', existing.companion_alive ?? null);
-  const companionState = getCompanionConnectionState(result, existing);
+  const reportMs = Number(result?.timestamp_ms);
   const now = Date.now();
-  const hasStatusContact = statusType === 'STATUS' && companionAlive === true;
+  const ageMs = Number.isFinite(result?.status_age_ms) ? Math.max(0, result.status_age_ms)
+    : Number.isFinite(reportMs) ? Math.max(0, now - reportMs) : DRONE_CONTACT_STALE_MS + 1;
+  const observedMs = now - ageMs;
+  // /status is a cache. Re-reading it is not a new reply from the companion.
+  if (Number.isFinite(reportMs) && Number.isFinite(existing.last_status_result_ms)
+      && reportMs === existing.last_status_result_ms) return existing;
+  if (Number.isFinite(existing.last_status_observed_ms) && now >= existing.last_status_observed_ms
+      && observedMs < existing.last_status_observed_ms) return existing;
+  const statusType = getDroneStatusType(result, existing);
+  const companionState = getCompanionConnectionState(result);
+  const companionAlive = companionState === 'CONNECTED'
+    ? getDroneStatusValue(result, 'companion_alive', true)
+    : companionState === 'OFFLINE' || companionState === 'DISCONNECTED' ? false : null;
+  const hasStatusContact = companionState === 'CONNECTED';
   const lastSeenMs = getDroneStatusValue(
     result,
     'last_seen_ms',
@@ -3341,10 +3367,8 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     ? 'CONNECTED'
     : normalizeRuntimeConnectionState(result?.connection_state) ||
       (companionState === 'DISCONNECTED' ? 'OFFLINE' : companionState);
-  const fcConnected = normalizeRuntimeFcState(
-    getDroneStatusValue(result, 'fc_connected'),
-    existing.fc_connected || 'UNKNOWN'
-  );
+  const fcConnected = hasStatusContact
+    ? normalizeRuntimeFcState(getDroneStatusValue(result, 'fc_connected')) : 'UNKNOWN';
   const lastTriggerSeq = getDroneStatusValue(result, 'last_trigger_seq', existing.last_trigger_seq ?? null);
   if (
     lastTriggerSeq !== null &&
@@ -3366,6 +3390,9 @@ function mergeDroneConnectionResult(vehicleId, result, existing = {}) {
     companion_state: companionState,
     fc_connected: fcConnected,
     last_seen_ms: lastSeenMs,
+    last_confirmed_contact_ms: hasStatusContact ? now - ageMs : existing.last_confirmed_contact_ms ?? null,
+    last_status_result_ms: Number.isFinite(reportMs) ? reportMs : existing.last_status_result_ms ?? null,
+    last_status_observed_ms: observedMs,
     last_contact_ms: result ? now : existing.last_contact_ms ?? null,
     last_status_type: statusType,
     companion_alive: companionAlive,
@@ -3448,13 +3475,19 @@ function applyDroneStatusResults(results) {
 }
 
 function normalizeDroneStatusResponse(responseBody) {
+  const stampAge = (result) => {
+    const servedMs = responseBody?.served_at_ms;
+    const reportMs = result?.timestamp_ms;
+    return Number.isFinite(servedMs) && Number.isFinite(reportMs)
+      ? { ...result, status_age_ms: Math.max(0, servedMs - reportMs) } : result;
+  };
   if (responseBody?.results && typeof responseBody.results === 'object') {
-    return responseBody.results;
+    return Object.fromEntries(Object.entries(responseBody.results).map(([id, result]) => [id, stampAge(result)]));
   }
 
   if (Array.isArray(responseBody?.vehicles)) {
     return Object.fromEntries(
-      responseBody.vehicles.map((vehicle) => [vehicle.vehicle_id, vehicle])
+      responseBody.vehicles.map((vehicle) => [vehicle.vehicle_id, stampAge(vehicle)])
     );
   }
 
@@ -3481,18 +3514,30 @@ async function refreshDroneStatus({ silent = false } = {}) {
 }
 
 async function fetchDroneStatusResults() {
-  const response = await fetch(`${runtimeState.backendUrl}/api/drones/status`, {
+  const statusBody = await requestDroneConnectionSnapshot('/api/drones/status', {
     method: 'GET',
-    cache: 'no-store',
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  const statusBody = await response.json();
   if (!statusBody || statusBody.ok !== true) {
     throw new Error('Invalid drone status response');
   }
 
   return normalizeDroneStatusResponse(statusBody);
+}
+
+async function requestDroneConnectionSnapshot(path, options) {
+  const controller = new AbortController();
+  // Backend checks vehicles sequentially, with STATUS/PING timeouts per vehicle.
+  const timeoutMs = Math.max(5000, getVehicles().length * 2000 + 2000);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${runtimeState.backendUrl}${path}`, {
+      ...options, cache: 'no-store', signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function connectDrones() {
@@ -3537,18 +3582,13 @@ async function refreshDroneConnections({ silent = false } = {}) {
   }
 
   try {
-    const response = await fetch(`${runtimeState.backendUrl}/api/drones/connect`, {
+    const connectionResult = await requestDroneConnectionSnapshot('/api/drones/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       cache: 'no-store',
       body: JSON.stringify({ vehicles: buildDroneConnectionPayload() }),
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const connectionResult = await response.json();
     if (!connectionResult || connectionResult.ok !== true || !connectionResult.results) {
       throw new Error('Invalid drone connection response');
     }
@@ -3652,17 +3692,31 @@ function getVehicleConnection(vehicle) {
 }
 
 function getDisplayedCompanionState(connection) {
-  if (connection?.last_status_type === 'STATUS' && connection.companion_alive === true) {
-    return 'CONNECTED';
-  }
-  if (connection?.last_status_type === 'STATUS' && connection.companion_alive === false) {
-    return 'OFFLINE';
-  }
-  return connection?.companion_state || connection?.connection_state || 'UNKNOWN';
+  const state = connection?.companion_state || connection?.connection_state || 'UNKNOWN';
+  return state === 'CONNECTED' && !hasFreshDroneContact(connection) ? 'STALE' : state;
 }
 
 function getDisplayedFcState(connection) {
+  if (getDisplayedCompanionState(connection) !== 'CONNECTED') return 'UNKNOWN';
   return connection?.fc_connected || 'UNKNOWN';
+}
+
+function hasFreshDroneContact(connection, now = Date.now()) {
+  const lastContact = connection?.last_confirmed_contact_ms ?? connection?.last_seen_ms;
+  return Number.isFinite(lastContact) && now >= lastContact && now - lastContact <= DRONE_CONTACT_STALE_MS;
+}
+
+function expireStaleDroneConnections(now = Date.now()) {
+  let changed = false;
+  for (const connection of Object.values(runtimeState.vehicleConnections)) {
+    if (connection.companion_state !== 'CONNECTED' || hasFreshDroneContact(connection, now)) continue;
+    connection.companion_state = connection.connection_state = 'STALE';
+    connection.companion_alive = null;
+    connection.fc_connected = 'UNKNOWN';
+    connection.reason = 'status_stale';
+    changed = true;
+  }
+  return changed;
 }
 
 function debugRuntimeConnectionCard(vehicle, connection, displayedCompanionState, displayedFcState) {
@@ -3866,6 +3920,7 @@ function renderRuntimeConnection() {
       CONNECTING: 'is-connecting',
       CONNECTED: 'is-connected',
       OFFLINE: 'is-offline',
+      STALE: 'is-unknown',
       ERROR: 'is-error',
     }[companionState] || 'is-error';
     const fcClassName = {
@@ -3877,6 +3932,11 @@ function renderRuntimeConnection() {
       ['Last seen', formatRuntimeTime(connection.last_seen_ms)],
       ['FC heartbeat', formatRuntimeTime(connection.last_fc_heartbeat_ms)],
     ];
+    if (companionState === 'STALE') {
+      detailLines.push(['Link', '상태 갱신 없음 (5초 초과) / FC 연결 미확인']);
+    } else if (companionState === 'OFFLINE' || companionState === 'ERROR') {
+      detailLines.push(['Link', `${connection.reason || companionState} / FC link unknown`]);
+    }
     const gpsState = getGpsDisplayState(connection);
 
     detailLines.push(['GPS', formatGpsDisplayState(gpsState)]);

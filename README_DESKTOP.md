@@ -134,6 +134,17 @@ node --check src/app.js
 powershell -ExecutionPolicy Bypass -File .\desktop\windows\build_desktop_windows.ps1
 ```
 
+## 연결 표시의 유효기간
+
+CM4의 새 응답을 확인하지 못한 채 5초가 지나면 연결 표시가 `STALE`로 바뀐다.
+조회에서 명시적인 응답 실패가 확인되면 `OFFLINE`/`ERROR`가 우선 표시된다.
+`/status`의 과거 캐시를 다시 읽는 것만으로 연결 유효기간이 연장되지는 않는다.
+CM4 응답이 없으면 FC 연결은 `UNKNOWN`으로 표시하며, CM4는 연결되어 있지만
+FC 단절을 보고하면 `Companion CONNECTED / FC DISCONNECTED`로 구분한다.
+
+이 5초는 UI 표시 유효기간이며 FC/CM4의 비행 통신 감시나 LAND 조건과 무관하다.
+새 응답 수신 시 표시가 복구되며, 데스크톱 실행파일에는 재빌드해야 반영된다.
+
 ## 데이터 저장 위치
 
 데스크톱 앱 실행 시 vehicle 설정 데이터는 앱 번들 내부가 아니라 사용자 데이터 경로에 저장된다.

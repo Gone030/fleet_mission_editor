@@ -1473,12 +1473,13 @@ def connect_drones(request: DroneConnectionRequest):
     }
     last_drone_status["timestamp_ms"] = now_ms()
 
-    return last_drone_status
+    return {**last_drone_status, "served_at_ms": now_ms()}
 
 
 @app.get("/api/drones/status")
 def drones_status():
-    return last_drone_status
+    # Serving the cache is not a new companion contact. Keep its report times.
+    return {**last_drone_status, "served_at_ms": now_ms()}
 
 
 @app.post("/api/drones/{vehicle_id}/emergency")
